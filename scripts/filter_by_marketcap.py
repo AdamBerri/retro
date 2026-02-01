@@ -7,8 +7,15 @@ Filter tickers by market cap, keeping only:
 Deletes parquet files for tickers that don't meet criteria.
 """
 
+import logging
+import sys
 import time
 from pathlib import Path
+
+# Suppress yfinance logging
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+logging.getLogger("peewee").setLevel(logging.CRITICAL)
 
 try:
     import yfinance as yf
@@ -23,6 +30,11 @@ BATCH_SIZE = 50  # Process in batches to avoid rate limiting
 BATCH_DELAY = 1  # Seconds between batches
 
 
+def log(msg):
+    """Print with immediate flush."""
+    print(msg, flush=True)
+
+
 def get_all_tickers():
     """Get list of all tickers from parquet files."""
     parquet_files = list(DATA_DIR.glob("*.parquet"))
@@ -35,7 +47,13 @@ def check_ticker(ticker: str) -> tuple[bool, str]:
     Returns (should_keep, reason).
     """
     try:
-        info = yf.Ticker(ticker).info
+        # Suppress stdout/stderr from yfinance
+        import io
+        import contextlib
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = yf.Ticker(ticker).info
+
         quote_type = info.get("quoteType", "")
         market_cap = info.get("marketCap")
 
@@ -48,20 +66,20 @@ def check_ticker(ticker: str) -> tuple[bool, str]:
             cap_billions = market_cap / 1_000_000_000
             return False, f"${cap_billions:.1f}B (< $5B)"
         else:
-            return False, "No market cap data"
+            return False, "Not found"
     except Exception as e:
-        return False, f"Error: {str(e)[:50]}"
+        return False, f"Error: {str(e)[:30]}"
 
 
 def main():
     if not DATA_DIR.exists():
-        print(f"Error: Data directory not found: {DATA_DIR}")
+        log(f"Error: Data directory not found: {DATA_DIR}")
         exit(1)
 
     tickers = get_all_tickers()
     total = len(tickers)
-    print(f"Found {total} tickers in {DATA_DIR}")
-    print(f"Filtering for market cap >= ${MIN_MARKET_CAP / 1_000_000_000:.0f}B or ETFs\n")
+    log(f"Found {total} tickers in {DATA_DIR}")
+    log(f"Filtering for market cap >= ${MIN_MARKET_CAP / 1_000_000_000:.0f}B or ETFs\n")
 
     kept = []
     deleted = []
@@ -69,8 +87,8 @@ def main():
     for i, (ticker, filepath) in enumerate(tickers):
         should_keep, reason = check_ticker(ticker)
 
-        status = "KEEP" if should_keep else "DELETE"
-        print(f"[{i+1}/{total}] {ticker}: {status} ({reason})")
+        status = "KEEP" if should_keep else "DEL "
+        log(f"[{i+1:4d}/{total}] {ticker:8s} {status} ({reason})")
 
         if should_keep:
             kept.append((ticker, reason))
@@ -80,25 +98,20 @@ def main():
 
         # Rate limiting: pause between batches
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < total:
-            print(f"  ... pausing {BATCH_DELAY}s to avoid rate limiting ...")
+            log(f"  ... pausing {BATCH_DELAY}s ...")
             time.sleep(BATCH_DELAY)
 
     # Summary
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"Total tickers processed: {total}")
-    print(f"Kept: {len(kept)}")
-    print(f"Deleted: {len(deleted)}")
+    log("\n" + "=" * 60)
+    log("SUMMARY")
+    log("=" * 60)
+    log(f"Total tickers processed: {total}")
+    log(f"Kept: {len(kept)}")
+    log(f"Deleted: {len(deleted)}")
 
-    print(f"\n--- Kept tickers ({len(kept)}) ---")
+    log(f"\n--- Kept tickers ({len(kept)}) ---")
     for ticker, reason in sorted(kept):
-        print(f"  {ticker}: {reason}")
-
-    if deleted:
-        print(f"\n--- Deleted tickers ({len(deleted)}) ---")
-        for ticker, reason in sorted(deleted):
-            print(f"  {ticker}: {reason}")
+        log(f"  {ticker}: {reason}")
 
 
 if __name__ == "__main__":

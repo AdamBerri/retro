@@ -19,8 +19,8 @@ class CandlestickChart {
         this.minCandleWidth = 2;
         this.maxCandleWidth = 50;
         
-        // Margins
-        this.margin = { top: 20, right: 80, bottom: 30, left: 20 };
+        // Margins (extra right margin for big price labels)
+        this.margin = { top: 20, right: 100, bottom: 40, left: 20 };
         
         // Colors
         this.colors = {
@@ -33,17 +33,29 @@ class CandlestickChart {
             sma50: '#3867d6',
             sma200: '#8854d0',
             volume: '#30363d',
-            crosshair: '#6e7681'
+            crosshair: '#8b949e',
+            crosshairGlow: 'rgba(139, 148, 158, 0.4)'
         };
         
         // Interaction state
         this.isDragging = false;
         this.lastMouseX = 0;
         this.hoverIndex = -1;
-        
+
+        // Smooth crosshair state (video game feel)
+        this.mouseX = 0;
+        this.mouseY = 0;
+        this.targetX = 0;
+        this.targetY = 0;
+        this.displayX = 0;
+        this.displayY = 0;
+        this.mouseOnCanvas = false;
+        this.crosshairLerp = 0.35; // Interpolation speed (0-1, higher = snappier)
+
         // Performance
         this.rafId = null;
         this.needsRender = true;
+        this.alwaysRender = false; // Set true for smooth crosshair animation
         
         // Bind methods
         this.render = this.render.bind(this);
@@ -52,6 +64,7 @@ class CandlestickChart {
         this.handleMouseDown = this.handleMouseDown.bind(this);
         this.handleMouseUp = this.handleMouseUp.bind(this);
         this.handleMouseLeave = this.handleMouseLeave.bind(this);
+        this.handleMouseEnter = this.handleMouseEnter.bind(this);
         
         // Setup
         this.setupCanvas();
@@ -93,17 +106,40 @@ class CandlestickChart {
         this.canvas.addEventListener('mousedown', this.handleMouseDown);
         this.canvas.addEventListener('mouseup', this.handleMouseUp);
         this.canvas.addEventListener('mouseleave', this.handleMouseLeave);
+        this.canvas.addEventListener('mouseenter', this.handleMouseEnter);
     }
     
     startRenderLoop() {
         const loop = () => {
-            if (this.needsRender) {
+            // Always render when mouse is on canvas for buttery smooth crosshair
+            if (this.needsRender || this.mouseOnCanvas) {
+                this.updateCrosshairPosition();
                 this.render();
                 this.needsRender = false;
             }
             this.rafId = requestAnimationFrame(loop);
         };
         loop();
+    }
+
+    updateCrosshairPosition() {
+        // Smooth interpolation for that video game feel
+        const lerp = (a, b, t) => a + (b - a) * t;
+
+        // Calculate distance to determine lerp speed
+        const dx = this.targetX - this.displayX;
+        const dy = this.targetY - this.displayY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Use faster lerp for larger distances, slower for precision
+        const dynamicLerp = dist > 100 ? 0.5 : this.crosshairLerp;
+
+        this.displayX = lerp(this.displayX, this.targetX, dynamicLerp);
+        this.displayY = lerp(this.displayY, this.targetY, dynamicLerp);
+
+        // Snap when very close to prevent endless micro-movements
+        if (Math.abs(this.displayX - this.targetX) < 0.5) this.displayX = this.targetX;
+        if (Math.abs(this.displayY - this.targetY) < 0.5) this.displayY = this.targetY;
     }
     
     setData(data) {
@@ -253,9 +289,9 @@ class CandlestickChart {
             }
         }
         
-        // Draw crosshair
-        if (this.hoverIndex >= 0 && this.hoverIndex < data.length) {
-            this.drawCrosshair(ctx, this.hoverIndex, priceToY, indexToX, chartHeight, chartWidth);
+        // Draw crosshair (always when mouse is on canvas)
+        if (this.mouseOnCanvas && this.hoverIndex >= 0 && this.hoverIndex < data.length) {
+            this.drawCrosshair(ctx, this.hoverIndex, priceToY, indexToX, chartHeight, chartWidth, minPrice, maxPrice);
         }
         
         // Draw price axis
@@ -318,47 +354,119 @@ class CandlestickChart {
         }
     }
     
-    drawCrosshair(ctx, index, priceToY, indexToX, chartHeight, chartWidth) {
+    drawCrosshair(ctx, index, priceToY, indexToX, chartHeight, chartWidth, minPrice, maxPrice) {
         const d = this.data[index];
-        const x = indexToX(index);
-        const y = priceToY(d.close);
-        
-        ctx.strokeStyle = this.colors.crosshair;
+        const candleX = indexToX(index);
+
+        // Use smooth interpolated position for crosshair (video game feel)
+        const x = this.displayX;
+        const y = this.displayY;
+
+        // Clamp to chart area
+        const clampedX = Math.max(this.margin.left, Math.min(this.width - this.margin.right, x));
+        const clampedY = Math.max(this.margin.top, Math.min(this.margin.top + chartHeight, y));
+
+        // Calculate price at cursor position
+        const priceAtCursor = maxPrice - ((clampedY - this.margin.top) / chartHeight) * (maxPrice - minPrice);
+
+        ctx.save();
+
+        // === HIGHLIGHT NEAREST CANDLE (draw first, behind everything) ===
+        if (index >= this.viewStart && index <= this.viewEnd) {
+            const highlightX = candleX - this.candleWidth / 2 - 2;
+            const highlightW = this.candleWidth + 4;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+            ctx.fillRect(highlightX, this.margin.top, highlightW, chartHeight);
+        }
+
+        // === CROSSHAIR LINES with glow ===
+        ctx.shadowColor = 'rgba(100, 180, 255, 0.4)';
+        ctx.shadowBlur = 6;
+        ctx.strokeStyle = 'rgba(150, 180, 220, 0.5)';
         ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        
+        ctx.setLineDash([]);
+
         // Vertical line
         ctx.beginPath();
-        ctx.moveTo(x, this.margin.top);
-        ctx.lineTo(x, this.height - this.margin.bottom);
+        ctx.moveTo(clampedX, this.margin.top);
+        ctx.lineTo(clampedX, this.height - this.margin.bottom);
         ctx.stroke();
-        
+
         // Horizontal line
         ctx.beginPath();
-        ctx.moveTo(this.margin.left, y);
-        ctx.lineTo(this.width - this.margin.right, y);
+        ctx.moveTo(this.margin.left, clampedY);
+        ctx.lineTo(this.width - this.margin.right, clampedY);
         ctx.stroke();
-        
-        ctx.setLineDash([]);
-        
-        // Price label
-        ctx.fillStyle = this.colors.background;
-        ctx.fillRect(this.width - this.margin.right, y - 10, this.margin.right, 20);
-        ctx.fillStyle = this.colors.text;
-        ctx.textAlign = 'left';
-        ctx.fillText(this.formatPrice(d.close), this.width - this.margin.right + 5, y + 4);
-        
-        // Date label
-        ctx.fillStyle = this.colors.background;
-        ctx.fillRect(x - 40, this.height - this.margin.bottom, 80, 20);
-        ctx.fillStyle = this.colors.text;
+
+        ctx.shadowBlur = 0;
+
+        // === CENTER CROSSHAIR DOT ===
+        ctx.beginPath();
+        ctx.arc(clampedX, clampedY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.8)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(clampedX, clampedY, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+
+        // === BIG PRICE LABEL ON Y-AXIS ===
+        const priceLabelH = 28;
+        const priceLabelW = this.margin.right - 4;
+        const priceLabelX = this.width - this.margin.right + 2;
+        const priceLabelY = clampedY - priceLabelH / 2;
+
+        // Background with accent color
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
+        this.roundRect(ctx, priceLabelX, priceLabelY, priceLabelW, priceLabelH, 4);
+        ctx.fill();
+
+        // Price text - BIG and bold
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(d.date, x, this.height - this.margin.bottom + 14);
-        
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.formatPrice(priceAtCursor), priceLabelX + priceLabelW / 2, clampedY);
+
+        // === BIG DATE LABEL ON X-AXIS ===
+        const dateLabelH = 26;
+        const dateLabelW = 100;
+        const dateLabelX = clampedX - dateLabelW / 2;
+        const dateLabelY = this.height - this.margin.bottom + 4;
+
+        // Background with accent color
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
+        this.roundRect(ctx, dateLabelX, dateLabelY, dateLabelW, dateLabelH, 4);
+        ctx.fill();
+
+        // Date text - BIG and bold
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(d.date, clampedX, dateLabelY + dateLabelH / 2);
+
+        ctx.restore();
+
         // Update info callback
         if (this.onHover) {
             this.onHover(index, d, this.indicators);
         }
+    }
+
+    // Helper for rounded rectangles
+    roundRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + width - radius, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+        ctx.lineTo(x + width, y + height - radius);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+        ctx.lineTo(x + radius, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
     }
     
     // ============================================
@@ -399,7 +507,20 @@ class CandlestickChart {
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
-        
+
+        // Track actual mouse position for smooth crosshair
+        this.mouseX = mouseX;
+        this.mouseY = mouseY;
+        this.targetX = mouseX;
+        this.targetY = mouseY;
+        this.mouseOnCanvas = true;
+
+        // Initialize display position on first move to prevent lerp from origin
+        if (this.displayX === 0 && this.displayY === 0) {
+            this.displayX = mouseX;
+            this.displayY = mouseY;
+        }
+
         if (this.isDragging) {
             const dx = mouseX - this.lastMouseX;
             const candlesPanned = Math.round(dx / this.candleWidth);
@@ -408,18 +529,18 @@ class CandlestickChart {
                 this.lastMouseX = mouseX;
             }
         } else {
-            // Hover
+            // Find nearest candle for data display
             const relativeX = mouseX - this.margin.left;
             const candleIndex = Math.floor(relativeX / this.candleWidth);
             const dataIndex = this.viewStart + candleIndex;
-            
+
             if (dataIndex >= 0 && dataIndex < this.data.length) {
                 this.hoverIndex = dataIndex;
             } else {
                 this.hoverIndex = -1;
             }
         }
-        
+
         this.needsRender = true;
     }
     
@@ -431,14 +552,27 @@ class CandlestickChart {
     
     handleMouseUp() {
         this.isDragging = false;
-        this.canvas.style.cursor = 'crosshair';
+        this.canvas.style.cursor = this.mouseOnCanvas ? 'none' : 'default';
     }
     
     handleMouseLeave() {
         this.isDragging = false;
         this.hoverIndex = -1;
-        this.canvas.style.cursor = 'crosshair';
+        this.mouseOnCanvas = false;
+        this.canvas.style.cursor = 'default';
         this.needsRender = true;
+    }
+
+    handleMouseEnter(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        // Teleport crosshair to mouse position on enter (no lerp from old position)
+        this.displayX = e.clientX - rect.left;
+        this.displayY = e.clientY - rect.top;
+        this.targetX = this.displayX;
+        this.targetY = this.displayY;
+        this.mouseOnCanvas = true;
+        // Hide native cursor for clean game-like feel
+        this.canvas.style.cursor = 'none';
     }
     
     pan(amount) {
@@ -451,9 +585,28 @@ class CandlestickChart {
         return Math.floor((this.width - this.margin.left - this.margin.right) / this.candleWidth);
     }
     
-    // Scroll to a specific date
+    // Scroll to a specific date (finds closest match for aggregated timeframes)
     scrollToDate(date) {
-        const idx = this.data.findIndex(d => d.date === date);
+        let idx = this.data.findIndex(d => d.date === date);
+
+        // If exact match not found, find the closest date
+        // (needed for aggregated timeframes where candles span multiple days)
+        if (idx < 0) {
+            const targetTime = new Date(date).getTime();
+            let closestIdx = 0;
+            let closestDiff = Infinity;
+
+            for (let i = 0; i < this.data.length; i++) {
+                const candleTime = new Date(this.data[i].date).getTime();
+                const diff = Math.abs(candleTime - targetTime);
+                if (diff < closestDiff) {
+                    closestDiff = diff;
+                    closestIdx = i;
+                }
+            }
+            idx = closestIdx;
+        }
+
         if (idx >= 0) {
             const visibleCount = this.getVisibleCount();
             this.viewStart = Math.max(0, idx - Math.floor(visibleCount / 2));
@@ -505,6 +658,7 @@ class CandlestickChart {
         this.canvas.removeEventListener('mousedown', this.handleMouseDown);
         this.canvas.removeEventListener('mouseup', this.handleMouseUp);
         this.canvas.removeEventListener('mouseleave', this.handleMouseLeave);
+        this.canvas.removeEventListener('mouseenter', this.handleMouseEnter);
     }
 }
 

@@ -22,7 +22,7 @@
         <header id="top-bar">
             <div class="logo">RETRO</div>
             <div class="search-hint">
-                <kbd>Ctrl</kbd><kbd>K</kbd> to search
+                Type to search
             </div>
             <div id="status">
                 <span id="ticker-count">0 tickers loaded</span>
@@ -49,18 +49,145 @@
             <!-- Center: Chart -->
             <section id="chart-container">
                 <div id="chart-header">
-                    <h1 id="chart-ticker">Select a stock</h1>
+                    <!-- Ticker Search Dropdown -->
+                    <div id="ticker-search-wrapper">
+                        <button id="ticker-trigger" aria-haspopup="listbox" aria-expanded="false">
+                            <span id="chart-ticker">Select a stock</span>
+                            <svg class="ticker-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <div id="ticker-dropdown" class="dropdown-hidden" role="listbox">
+                            <div class="ticker-search-container">
+                                <svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+                                    <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                                </svg>
+                                <input type="text" id="ticker-search-input" placeholder="Search tickers..." autocomplete="off" spellcheck="false">
+                                <kbd class="search-shortcut">/</kbd>
+                            </div>
+                            <div id="ticker-results"></div>
+                            <div class="ticker-dropdown-footer">
+                                <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+                                <span><kbd>↵</kbd> select</span>
+                                <span><kbd>esc</kbd> close</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div id="chart-info">
                         <span id="chart-price"></span>
                         <span id="chart-change"></span>
                     </div>
+
+                    <!-- Indicator Menu -->
+                    <div id="indicator-menu-wrapper">
+                        <button id="indicator-trigger" aria-haspopup="true" aria-expanded="false">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                <path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                            </svg>
+                            <span>Indicators</span>
+                            <svg class="indicator-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <div id="indicator-dropdown" class="dropdown-hidden">
+                            <div class="indicator-section">
+                                <div class="indicator-section-header">Overlays</div>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="sma20" checked>
+                                    <span class="indicator-name">SMA 20</span>
+                                    <span class="indicator-color" style="background: #f7b731"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="sma50" checked>
+                                    <span class="indicator-name">SMA 50</span>
+                                    <span class="indicator-color" style="background: #3867d6"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="sma200">
+                                    <span class="indicator-name">SMA 200</span>
+                                    <span class="indicator-color" style="background: #8854d0"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="ema12">
+                                    <span class="indicator-name">EMA 12</span>
+                                    <span class="indicator-color" style="background: #e91e63"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="ema26">
+                                    <span class="indicator-name">EMA 26</span>
+                                    <span class="indicator-color" style="background: #9c27b0"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="overlay" data-indicator="bollinger">
+                                    <span class="indicator-name">Bollinger Bands</span>
+                                    <span class="indicator-color" style="background: linear-gradient(90deg, #9c27b0 0%, transparent 50%, #9c27b0 100%)"></span>
+                                </label>
+                            </div>
+                            <div class="indicator-section">
+                                <div class="indicator-section-header">Oscillators</div>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="panel" data-indicator="rsi">
+                                    <span class="indicator-name">RSI (14)</span>
+                                    <span class="indicator-color" style="background: #4fc3f7"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="panel" data-indicator="macd">
+                                    <span class="indicator-name">MACD</span>
+                                    <span class="indicator-color" style="background: linear-gradient(90deg, #4fc3f7, #ff9800)"></span>
+                                </label>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="panel" data-indicator="stochastic">
+                                    <span class="indicator-name">Stochastic</span>
+                                    <span class="indicator-color" style="background: linear-gradient(90deg, #4fc3f7, #ff9800)"></span>
+                                </label>
+                            </div>
+                            <div class="indicator-section">
+                                <div class="indicator-section-header">Volume</div>
+                                <label class="indicator-item">
+                                    <input type="checkbox" data-type="panel" data-indicator="volume" checked>
+                                    <span class="indicator-name">Volume</span>
+                                    <span class="indicator-color" style="background: linear-gradient(90deg, #26a69a, #ef5350)"></span>
+                                </label>
+                            </div>
+                            <div class="indicator-dropdown-footer">
+                                <span><kbd>I</kbd> toggle menu</span>
+                                <span><kbd>R</kbd> RSI</span>
+                                <span><kbd>M</kbd> MACD</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Timeframe Selector - Refined Segmented Control -->
+                    <div id="timeframe-selector">
+                        <div class="tf-track">
+                            <div class="tf-indicator"></div>
+                            <button class="tf-btn active" data-tf="1D" data-index="0">
+                                <span class="tf-label">1D</span>
+                            </button>
+                            <button class="tf-btn" data-tf="1W" data-index="1">
+                                <span class="tf-label">1W</span>
+                            </button>
+                            <button class="tf-btn" data-tf="1M" data-index="2">
+                                <span class="tf-label">1M</span>
+                            </button>
+                            <button class="tf-btn" data-tf="3M" data-index="3">
+                                <span class="tf-label">3M</span>
+                            </button>
+                            <button class="tf-btn" data-tf="6M" data-index="4">
+                                <span class="tf-label">6M</span>
+                            </button>
+                            <button class="tf-btn" data-tf="1Y" data-index="5">
+                                <span class="tf-label">1Y</span>
+                            </button>
+                            <button class="tf-btn" data-tf="ALL" data-index="6">
+                                <span class="tf-label">ALL</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <canvas id="chart"></canvas>
-                <div id="chart-crosshair">
-                    <div id="crosshair-x"></div>
-                    <div id="crosshair-y"></div>
-                    <div id="crosshair-label"></div>
-                </div>
+                <div id="panels-container"></div>
             </section>
 
             <!-- Right Panel: Quick Info -->
@@ -130,6 +257,12 @@
 
     <!-- Scripts -->
     <script src="js/indicators.js"></script>
+    <script src="js/chart-panel.js"></script>
+    <script src="js/panels/price-panel.js"></script>
+    <script src="js/panels/volume-panel.js"></script>
+    <script src="js/panels/oscillator-panel.js"></script>
+    <script src="js/panel-resizer.js"></script>
+    <script src="js/panel-manager.js"></script>
     <script src="js/chart.js"></script>
     <script src="js/app.js"></script>
 </body>

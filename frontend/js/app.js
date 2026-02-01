@@ -11,7 +11,17 @@ class App {
         this.currentTicker = null;
         this.scanResults = [];
         this.currentResultIndex = -1;
+
+        // Timeframe state
+        this.currentTimeframe = '1D';
+        this.rawData = {};           // Raw daily data per ticker: { AAPL: [...], MSFT: [...] }
+        this.aggregatedCache = {};   // Cached aggregated data: { 'AAPL:1W': [...], 'AAPL:1M': [...] }
         
+        // Ticker dropdown state
+        this.tickerDropdownOpen = false;
+        this.tickerSearchResults = [];
+        this.selectedTickerIndex = -1;
+
         // DOM Elements
         this.elements = {
             commandBar: document.getElementById('command-bar'),
@@ -31,6 +41,11 @@ class App {
             dateFrom: document.getElementById('date-from'),
             dateTo: document.getElementById('date-to'),
             runScan: document.getElementById('run-scan'),
+            // Ticker dropdown
+            tickerTrigger: document.getElementById('ticker-trigger'),
+            tickerDropdown: document.getElementById('ticker-dropdown'),
+            tickerSearchInput: document.getElementById('ticker-search-input'),
+            tickerResults: document.getElementById('ticker-results'),
             // Info panel
             infoOpen: document.getElementById('info-open'),
             infoHigh: document.getElementById('info-high'),
@@ -43,35 +58,61 @@ class App {
             infoRsi: document.getElementById('info-rsi'),
         };
         
-        // Chart
-        this.chart = new CandlestickChart(document.getElementById('chart'));
-        this.chart.onHover = this.handleChartHover.bind(this);
-        
+        // Panel Manager (replaces single chart)
+        this.panelManager = new PanelManager(document.getElementById('panels-container'));
+        this.panelManager.onHover = this.handleChartHover.bind(this);
+        this.panelManager.initializePanels();
+
+        // Indicator menu state
+        this.indicatorMenuOpen = false;
+
         // Initialize
         this.setupEventListeners();
+        this.initIndicatorMenu();
         this.setDefaultDates();
         this.loadInitialData();
     }
     
     async loadInitialData() {
+        console.log('[RETRO] Starting initial data load...');
+
         try {
             // Load tickers
+            console.log('[RETRO] Fetching tickers from /api/tickers...');
             const tickersRes = await fetch('/api/tickers');
+
+            if (!tickersRes.ok) {
+                throw new Error(`Tickers API returned ${tickersRes.status}: ${tickersRes.statusText}`);
+            }
+
             this.tickers = await tickersRes.json();
+            console.log(`[RETRO] Loaded ${this.tickers.length} tickers`);
             this.elements.tickerCount.textContent = `${this.tickers.length} tickers loaded`;
-            
+
             // Load scan types
+            console.log('[RETRO] Fetching scan types from /api/scan-types...');
             const scanTypesRes = await fetch('/api/scan-types');
+
+            if (!scanTypesRes.ok) {
+                throw new Error(`Scan types API returned ${scanTypesRes.status}: ${scanTypesRes.statusText}`);
+            }
+
             this.scanTypes = await scanTypesRes.json();
+            console.log(`[RETRO] Loaded ${this.scanTypes.length} scan types`);
             this.populateScanTypes();
-            
+
             // Load first ticker for demo
             if (this.tickers.length > 0) {
+                console.log(`[RETRO] Loading first ticker: ${this.tickers[0]}`);
                 this.loadTicker(this.tickers[0]);
             }
+
+            console.log('[RETRO] Initialization complete');
         } catch (err) {
-            console.error('Failed to load initial data:', err);
-            this.elements.tickerCount.textContent = 'Error loading data';
+            console.error('[RETRO] Failed to load initial data:', err);
+            console.error('[RETRO] Make sure the backend is running: cargo run');
+            this.elements.tickerCount.textContent = 'Error: Backend not running?';
+            this.elements.scanStatus.textContent = 'Start server with: cargo run';
         }
     }
     
@@ -103,20 +144,55 @@ class App {
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
                 e.preventDefault();
                 this.openCommandBar();
+                return;
             }
-            
-            // Escape - close command bar
+
+            // Escape - close command bar or ticker dropdown
             if (e.key === 'Escape') {
                 this.closeCommandBar();
+                this.closeTickerDropdown();
+                return;
             }
-            
-            // J/K - navigate results
+
+            // If command bar is open, don't process other shortcuts
             if (!this.elements.commandBar.classList.contains('hidden')) return;
-            
-            if (e.key === 'j') {
+
+            // Skip if in input/select/textarea
+            if (this.isInInput()) return;
+
+            // Skip modifier keys (except shift for capitals)
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+            // J/K - navigate results (only when we have results)
+            if (e.key === 'j' && this.scanResults.length > 0) {
                 this.nextResult();
-            } else if (e.key === 'k') {
+                return;
+            } else if (e.key === 'k' && this.scanResults.length > 0) {
                 this.prevResult();
+                return;
+            }
+
+            // Number keys 1-7 for timeframes
+            const tfMap = {
+                '1': '1D', '2': '1W', '3': '1M', '4': '3M', '5': '6M',
+                '6': '1Y', '7': 'ALL'
+            };
+            if (tfMap[e.key]) {
+                this.setTimeframe(tfMap[e.key]);
+                // Update the indicator visually
+                const btn = document.querySelector(`.tf-btn[data-tf="${tfMap[e.key]}"]`);
+                const indicator = document.querySelector('.tf-indicator');
+                if (btn && indicator) {
+                    this.updateTimeframeIndicator(btn, indicator, true);
+                }
+                return;
+            }
+
+            // TradingView-style "type anywhere to search"
+            // Single printable character (letters/numbers) opens command bar
+            if (e.key.length === 1 && /[a-zA-Z0-9]/.test(e.key)) {
+                e.preventDefault();
+                this.openCommandBarWithChar(e.key);
             }
         });
         
@@ -154,8 +230,396 @@ class App {
         // Results navigation
         document.getElementById('prev-result')?.addEventListener('click', () => this.prevResult());
         document.getElementById('next-result')?.addEventListener('click', () => this.nextResult());
+
+        // Timeframe buttons with animated indicator
+        this.initTimeframeSelector();
+
+        // Ticker dropdown
+        this.initTickerDropdown();
+
+        // Indicator shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (this.isInInput()) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+            switch (e.key.toLowerCase()) {
+                case 'i':
+                    e.preventDefault();
+                    this.toggleIndicatorMenu();
+                    break;
+                case 'r':
+                    e.preventDefault();
+                    this.toggleIndicator('panel', 'rsi');
+                    break;
+                case 'm':
+                    e.preventDefault();
+                    this.toggleIndicator('panel', 'macd');
+                    break;
+                case 'b':
+                    e.preventDefault();
+                    this.toggleIndicator('overlay', 'bollinger');
+                    break;
+                case 'v':
+                    e.preventDefault();
+                    this.toggleIndicator('panel', 'volume');
+                    break;
+            }
+        });
     }
-    
+
+    // ============================================
+    // TICKER DROPDOWN
+    // ============================================
+
+    initTickerDropdown() {
+        const trigger = this.elements.tickerTrigger;
+        const dropdown = this.elements.tickerDropdown;
+        const input = this.elements.tickerSearchInput;
+
+        // Toggle on trigger click
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleTickerDropdown();
+        });
+
+        // Search input handling
+        input.addEventListener('input', () => {
+            this.handleTickerSearch(input.value);
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                this.selectNextTicker();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                this.selectPrevTicker();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                this.confirmTickerSelection();
+            } else if (e.key === 'Escape') {
+                this.closeTickerDropdown();
+            }
+        });
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && !trigger.contains(e.target)) {
+                this.closeTickerDropdown();
+            }
+        });
+
+        // "/" shortcut to focus ticker search (when not in other inputs)
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '/' && !this.isInInput()) {
+                e.preventDefault();
+                this.openTickerDropdown();
+            }
+        });
+    }
+
+    isInInput() {
+        const active = document.activeElement;
+        return active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA');
+    }
+
+    toggleTickerDropdown() {
+        if (this.tickerDropdownOpen) {
+            this.closeTickerDropdown();
+        } else {
+            this.openTickerDropdown();
+        }
+    }
+
+    openTickerDropdown() {
+        this.tickerDropdownOpen = true;
+        this.elements.tickerTrigger.setAttribute('aria-expanded', 'true');
+        this.elements.tickerDropdown.classList.remove('dropdown-hidden');
+        this.elements.tickerSearchInput.value = '';
+        this.elements.tickerSearchInput.focus();
+        this.handleTickerSearch('');
+    }
+
+    closeTickerDropdown() {
+        this.tickerDropdownOpen = false;
+        this.elements.tickerTrigger.setAttribute('aria-expanded', 'false');
+        this.elements.tickerDropdown.classList.add('dropdown-hidden');
+        this.selectedTickerIndex = -1;
+    }
+
+    handleTickerSearch(query) {
+        const q = query.toLowerCase().trim();
+        let results = [];
+
+        if (!q) {
+            // Show recent / popular tickers when empty
+            results = this.tickers.slice(0, 15);
+        } else {
+            // Fuzzy search - prioritize starts-with, then contains
+            const startsWithMatches = [];
+            const containsMatches = [];
+
+            for (const ticker of this.tickers) {
+                const lowerTicker = ticker.toLowerCase();
+                if (lowerTicker.startsWith(q)) {
+                    startsWithMatches.push(ticker);
+                } else if (lowerTicker.includes(q)) {
+                    containsMatches.push(ticker);
+                }
+            }
+
+            results = [...startsWithMatches, ...containsMatches].slice(0, 20);
+        }
+
+        this.tickerSearchResults = results;
+        this.selectedTickerIndex = results.length > 0 ? 0 : -1;
+        this.renderTickerResults(results, q);
+    }
+
+    renderTickerResults(results, query) {
+        const container = this.elements.tickerResults;
+
+        if (results.length === 0) {
+            container.innerHTML = `
+                <div class="ticker-empty-state">
+                    No tickers found for "${query}"
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = results.map((ticker, index) => {
+            const highlighted = this.highlightMatch(ticker, query);
+            const isSelected = index === this.selectedTickerIndex;
+            return `
+                <div class="ticker-result-item ${isSelected ? 'selected' : ''}"
+                     data-ticker="${ticker}"
+                     data-index="${index}">
+                    <span class="ticker-symbol">${highlighted}</span>
+                </div>
+            `;
+        }).join('');
+
+        // Add click handlers
+        container.querySelectorAll('.ticker-result-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const ticker = item.dataset.ticker;
+                this.loadTicker(ticker);
+                this.closeTickerDropdown();
+            });
+
+            item.addEventListener('mouseenter', () => {
+                this.updateTickerSelection(parseInt(item.dataset.index));
+            });
+        });
+    }
+
+    highlightMatch(ticker, query) {
+        if (!query) return ticker;
+        const lowerTicker = ticker.toLowerCase();
+        const idx = lowerTicker.indexOf(query.toLowerCase());
+        if (idx === -1) return ticker;
+
+        const before = ticker.slice(0, idx);
+        const match = ticker.slice(idx, idx + query.length);
+        const after = ticker.slice(idx + query.length);
+
+        return `${before}<span class="ticker-match-highlight">${match}</span>${after}`;
+    }
+
+    updateTickerSelection(newIndex) {
+        const items = this.elements.tickerResults.querySelectorAll('.ticker-result-item');
+        if (this.selectedTickerIndex >= 0 && items[this.selectedTickerIndex]) {
+            items[this.selectedTickerIndex].classList.remove('selected');
+        }
+        this.selectedTickerIndex = newIndex;
+        if (newIndex >= 0 && items[newIndex]) {
+            items[newIndex].classList.add('selected');
+            items[newIndex].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    selectNextTicker() {
+        if (this.tickerSearchResults.length === 0) return;
+        const newIndex = (this.selectedTickerIndex + 1) % this.tickerSearchResults.length;
+        this.updateTickerSelection(newIndex);
+    }
+
+    selectPrevTicker() {
+        if (this.tickerSearchResults.length === 0) return;
+        const newIndex = (this.selectedTickerIndex - 1 + this.tickerSearchResults.length) % this.tickerSearchResults.length;
+        this.updateTickerSelection(newIndex);
+    }
+
+    confirmTickerSelection() {
+        if (this.selectedTickerIndex >= 0 && this.tickerSearchResults[this.selectedTickerIndex]) {
+            const ticker = this.tickerSearchResults[this.selectedTickerIndex];
+            this.loadTicker(ticker);
+            this.closeTickerDropdown();
+        }
+    }
+
+    // ============================================
+    // TIMEFRAME SELECTOR
+    // ============================================
+
+    initTimeframeSelector() {
+        const buttons = document.querySelectorAll('.tf-btn');
+        const indicator = document.querySelector('.tf-indicator');
+
+        if (!indicator) return;
+
+        // Set initial indicator position after layout is complete
+        const activeBtn = document.querySelector('.tf-btn.active');
+        if (activeBtn) {
+            // Use requestAnimationFrame to ensure layout is complete
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    this.updateTimeframeIndicator(activeBtn, indicator, false);
+                });
+            });
+        }
+
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tf = btn.dataset.tf;
+                this.setTimeframe(tf);
+                this.updateTimeframeIndicator(btn, indicator, true);
+            });
+        });
+    }
+
+    updateTimeframeIndicator(activeBtn, indicator, animate = true) {
+        const btnRect = activeBtn.getBoundingClientRect();
+        const trackRect = activeBtn.parentElement.getBoundingClientRect();
+
+        const offsetLeft = btnRect.left - trackRect.left;
+        const width = btnRect.width;
+
+        if (!animate) {
+            indicator.style.transition = 'none';
+        }
+
+        indicator.style.transform = `translateX(${offsetLeft - 3}px)`;
+        indicator.style.width = `${width}px`;
+
+        if (!animate) {
+            // Force reflow then restore transition
+            indicator.offsetHeight;
+            indicator.style.transition = '';
+        }
+    }
+
+    // ============================================
+    // INDICATOR MENU
+    // ============================================
+
+    initIndicatorMenu() {
+        const trigger = document.getElementById('indicator-trigger');
+        const dropdown = document.getElementById('indicator-dropdown');
+
+        if (!trigger || !dropdown) return;
+
+        // Toggle on click
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleIndicatorMenu();
+        });
+
+        // Handle checkbox changes
+        dropdown.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+            checkbox.addEventListener('change', () => {
+                const type = checkbox.dataset.type;
+                const indicator = checkbox.dataset.indicator;
+                this.toggleIndicator(type, indicator, checkbox.checked);
+            });
+        });
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && !trigger.contains(e.target)) {
+                this.closeIndicatorMenu();
+            }
+        });
+
+        // Sync checkbox states with panel manager
+        this.syncIndicatorCheckboxes();
+    }
+
+    toggleIndicatorMenu() {
+        const dropdown = document.getElementById('indicator-dropdown');
+        const trigger = document.getElementById('indicator-trigger');
+
+        if (!dropdown) return;
+
+        this.indicatorMenuOpen = !this.indicatorMenuOpen;
+        dropdown.classList.toggle('dropdown-hidden', !this.indicatorMenuOpen);
+        trigger?.setAttribute('aria-expanded', this.indicatorMenuOpen.toString());
+
+        if (this.indicatorMenuOpen) {
+            this.syncIndicatorCheckboxes();
+        }
+    }
+
+    closeIndicatorMenu() {
+        const dropdown = document.getElementById('indicator-dropdown');
+        const trigger = document.getElementById('indicator-trigger');
+
+        this.indicatorMenuOpen = false;
+        dropdown?.classList.add('dropdown-hidden');
+        trigger?.setAttribute('aria-expanded', 'false');
+    }
+
+    syncIndicatorCheckboxes() {
+        const dropdown = document.getElementById('indicator-dropdown');
+        if (!dropdown) return;
+
+        dropdown.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+            const type = checkbox.dataset.type;
+            const indicator = checkbox.dataset.indicator;
+
+            if (type === 'overlay') {
+                checkbox.checked = this.panelManager.hasOverlay(indicator);
+            } else if (type === 'panel') {
+                checkbox.checked = this.panelManager.hasPanel(indicator);
+            }
+        });
+    }
+
+    toggleIndicator(type, indicator, forceState = null) {
+        let isEnabled;
+
+        if (type === 'overlay') {
+            if (forceState !== null) {
+                // Force state from checkbox
+                const hasIt = this.panelManager.hasOverlay(indicator);
+                if (forceState !== hasIt) {
+                    isEnabled = this.panelManager.toggleOverlay(indicator);
+                } else {
+                    isEnabled = hasIt;
+                }
+            } else {
+                isEnabled = this.panelManager.toggleOverlay(indicator);
+            }
+        } else if (type === 'panel') {
+            if (forceState !== null) {
+                const hasIt = this.panelManager.hasPanel(indicator);
+                if (forceState !== hasIt) {
+                    isEnabled = this.panelManager.togglePanel(indicator);
+                } else {
+                    isEnabled = hasIt;
+                }
+            } else {
+                isEnabled = this.panelManager.togglePanel(indicator);
+            }
+        }
+
+        // Sync checkboxes
+        this.syncIndicatorCheckboxes();
+
+        return isEnabled;
+    }
+
     // ============================================
     // COMMAND BAR
     // ============================================
@@ -166,7 +630,19 @@ class App {
         this.elements.commandInput.focus();
         this.handleCommandInput('');
     }
-    
+
+    /**
+     * Open command bar with a pre-filled character (TradingView-style type-anywhere)
+     */
+    openCommandBarWithChar(char) {
+        this.elements.commandBar.classList.remove('hidden');
+        this.elements.commandInput.value = char;
+        this.elements.commandInput.focus();
+        // Move cursor to end
+        this.elements.commandInput.setSelectionRange(char.length, char.length);
+        this.handleCommandInput(char);
+    }
+
     closeCommandBar() {
         this.elements.commandBar.classList.add('hidden');
     }
@@ -283,19 +759,31 @@ class App {
             this.currentTicker = ticker;
             this.elements.chartTicker.textContent = ticker;
             this.elements.chartTicker.classList.add('loading');
-            
-            const res = await fetch(`/api/ticker/${ticker}`);
-            const data = await res.json();
-            
-            this.chart.setData(data.data);
-            
-            // Update header
-            if (data.data.length > 0) {
-                const last = data.data[data.data.length - 1];
-                const prev = data.data[data.data.length - 2];
-                
+
+            // Check if we already have raw data cached
+            if (!this.rawData[ticker]) {
+                const res = await fetch(`/api/ticker/${ticker}`);
+                const data = await res.json();
+
+                // Store raw daily data
+                this.rawData[ticker] = data.data;
+
+                // Invalidate any stale aggregation cache for this ticker
+                this.invalidateCache(ticker);
+            }
+
+            // Get data for current timeframe (uses cache if available)
+            const displayData = this.getAggregatedData(ticker, this.currentTimeframe);
+            this.panelManager.setData(displayData);
+
+            // Update header from raw daily data (always show daily close)
+            const rawData = this.rawData[ticker];
+            if (rawData.length > 0) {
+                const last = rawData[rawData.length - 1];
+                const prev = rawData[rawData.length - 2];
+
                 this.elements.chartPrice.textContent = `$${last.close.toFixed(2)}`;
-                
+
                 if (prev) {
                     const change = ((last.close - prev.close) / prev.close * 100).toFixed(2);
                     const isUp = last.close >= prev.close;
@@ -303,7 +791,7 @@ class App {
                     this.elements.chartChange.className = isUp ? 'up' : 'down';
                 }
             }
-            
+
             this.elements.chartTicker.classList.remove('loading');
         } catch (err) {
             console.error('Failed to load ticker:', err);
@@ -448,7 +936,7 @@ class App {
         // Load the ticker and scroll to date
         const result = this.scanResults[index];
         this.loadTicker(result.ticker).then(() => {
-            this.chart.scrollToDate(result.date);
+            this.panelManager.scrollToDate(result.date);
         });
     }
     
@@ -496,6 +984,154 @@ class App {
         if (vol >= 1e6) return (vol / 1e6).toFixed(1) + 'M';
         if (vol >= 1e3) return (vol / 1e3).toFixed(1) + 'K';
         return vol.toString();
+    }
+
+    // ============================================
+    // TIMEFRAME AGGREGATION
+    // ============================================
+
+    /**
+     * Aggregate daily OHLCV data to a higher timeframe.
+     * Uses caching to avoid recomputation.
+     */
+    getAggregatedData(ticker, timeframe) {
+        // 1D is raw data, no aggregation needed
+        if (timeframe === '1D') {
+            return this.rawData[ticker] || [];
+        }
+
+        const cacheKey = `${ticker}:${timeframe}`;
+
+        // Return cached if available
+        if (this.aggregatedCache[cacheKey]) {
+            return this.aggregatedCache[cacheKey];
+        }
+
+        const dailyData = this.rawData[ticker];
+        if (!dailyData || dailyData.length === 0) {
+            return [];
+        }
+
+        // Aggregate and cache
+        const aggregated = this.aggregateOHLCV(dailyData, timeframe);
+        this.aggregatedCache[cacheKey] = aggregated;
+
+        return aggregated;
+    }
+
+    /**
+     * Core aggregation logic. Groups daily candles into larger timeframes.
+     * OHLCV rules: O=first, H=max, L=min, C=last, V=sum
+     */
+    aggregateOHLCV(dailyData, timeframe) {
+        const grouper = this.getGroupingFunction(timeframe);
+        const groups = new Map();
+
+        // Group candles by their period key
+        for (const candle of dailyData) {
+            const key = grouper(candle.date);
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(candle);
+        }
+
+        // Aggregate each group into a single candle
+        const result = [];
+        for (const [key, candles] of groups) {
+            if (candles.length === 0) continue;
+
+            result.push({
+                date: candles[candles.length - 1].date, // Use last date in period
+                open: candles[0].open,
+                high: Math.max(...candles.map(c => c.high)),
+                low: Math.min(...candles.map(c => c.low)),
+                close: candles[candles.length - 1].close,
+                volume: candles.reduce((sum, c) => sum + c.volume, 0)
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Returns a function that maps a date string to a period key.
+     * Dates within the same period get the same key.
+     */
+    getGroupingFunction(timeframe) {
+        switch (timeframe) {
+            case '1W':
+                // ISO week: Mon-Sun
+                return (dateStr) => {
+                    const d = new Date(dateStr);
+                    const year = d.getUTCFullYear();
+                    const week = this.getISOWeek(d);
+                    return `${year}-W${week}`;
+                };
+            case '1M':
+                return (dateStr) => dateStr.substring(0, 7); // YYYY-MM
+            case '3M':
+                return (dateStr) => {
+                    const d = new Date(dateStr);
+                    const year = d.getUTCFullYear();
+                    const quarter = Math.floor(d.getUTCMonth() / 3);
+                    return `${year}-Q${quarter}`;
+                };
+            case '6M':
+                return (dateStr) => {
+                    const d = new Date(dateStr);
+                    const year = d.getUTCFullYear();
+                    const half = Math.floor(d.getUTCMonth() / 6);
+                    return `${year}-H${half}`;
+                };
+            case '1Y':
+                return (dateStr) => dateStr.substring(0, 4); // YYYY
+            case 'ALL':
+                // For ALL, we still use daily data (no grouping)
+                return (dateStr) => dateStr;
+            default:
+                return (dateStr) => dateStr; // No grouping
+        }
+    }
+
+    /**
+     * Get ISO week number (1-53)
+     */
+    getISOWeek(date) {
+        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+        const dayNum = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    }
+
+    /**
+     * Switch to a new timeframe and re-render chart
+     */
+    setTimeframe(timeframe) {
+        if (timeframe === this.currentTimeframe) return;
+
+        this.currentTimeframe = timeframe;
+
+        // Update active class on buttons
+        document.querySelectorAll('.tf-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tf === timeframe);
+        });
+
+        // Re-render chart with aggregated data
+        if (this.currentTicker) {
+            const data = this.getAggregatedData(this.currentTicker, timeframe);
+            this.panelManager.setData(data);
+        }
+    }
+
+    /**
+     * Clear aggregation cache for a ticker (call when new data arrives)
+     */
+    invalidateCache(ticker) {
+        const keysToDelete = Object.keys(this.aggregatedCache)
+            .filter(key => key.startsWith(ticker + ':'));
+        keysToDelete.forEach(key => delete this.aggregatedCache[key]);
     }
 }
 
