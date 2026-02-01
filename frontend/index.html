@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RETRO - Query the Past, Trade the Future</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Command Bar (Ctrl+K) -->
+    <div id="command-bar" class="hidden">
+        <div class="command-overlay"></div>
+        <div class="command-modal">
+            <input type="text" id="command-input" placeholder="Search stocks, run scans..." autocomplete="off">
+            <div id="command-results"></div>
+        </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div id="app">
+        <!-- Top Bar -->
+        <header id="top-bar">
+            <div class="logo">RETRO</div>
+            <div class="search-hint">
+                <kbd>Ctrl</kbd><kbd>K</kbd> to search
+            </div>
+            <div id="status">
+                <span id="ticker-count">0 tickers loaded</span>
+                <span id="scan-status"></span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main id="main">
+            <!-- Left Panel: Scan Results -->
+            <aside id="results-panel">
+                <div class="panel-header">
+                    <h2>Scan Results</h2>
+                    <span id="results-count"></span>
+                </div>
+                <div id="results-list"></div>
+                <div id="results-nav" class="hidden">
+                    <button id="prev-result" title="Previous (K)">◀</button>
+                    <span id="result-position">0 / 0</span>
+                    <button id="next-result" title="Next (J)">▶</button>
+                </div>
+            </aside>
+
+            <!-- Center: Chart -->
+            <section id="chart-container">
+                <div id="chart-header">
+                    <h1 id="chart-ticker">Select a stock</h1>
+                    <div id="chart-info">
+                        <span id="chart-price"></span>
+                        <span id="chart-change"></span>
+                    </div>
+                </div>
+                <canvas id="chart"></canvas>
+                <div id="chart-crosshair">
+                    <div id="crosshair-x"></div>
+                    <div id="crosshair-y"></div>
+                    <div id="crosshair-label"></div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Quick Info -->
+            <aside id="info-panel">
+                <div class="panel-header">
+                    <h2>Quick Info</h2>
+                </div>
+                <div id="quick-info">
+                    <div class="info-row">
+                        <span class="label">Open</span>
+                        <span id="info-open" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">High</span>
+                        <span id="info-high" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Low</span>
+                        <span id="info-low" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Close</span>
+                        <span id="info-close" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Volume</span>
+                        <span id="info-volume" class="value">-</span>
+                    </div>
+                    <hr>
+                    <div class="info-row">
+                        <span class="label">SMA 20</span>
+                        <span id="info-sma20" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">SMA 50</span>
+                        <span id="info-sma50" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">SMA 200</span>
+                        <span id="info-sma200" class="value">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">RSI 14</span>
+                        <span id="info-rsi" class="value">-</span>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Bottom: Scan Builder -->
+        <footer id="scan-bar">
+            <select id="scan-type">
+                <option value="">Select scan type...</option>
+            </select>
+            <div id="scan-params"></div>
+            <div id="date-range">
+                <label>
+                    From: <input type="date" id="date-from">
+                </label>
+                <label>
+                    To: <input type="date" id="date-to">
+                </label>
+            </div>
+            <button id="run-scan">Run Scan</button>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/indicators.js"></script>
+    <script src="js/chart.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# Rust
+/target/
+Cargo.lock
+
+# Data
+/data/ohlcv/*.parquet
+/data/ohlcv/*.csv
+/data/ohlcv/*.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Global ignore for data files
+*.csv
+*.parquet
