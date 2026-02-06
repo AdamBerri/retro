@@ -25,7 +25,12 @@ class VolumePanel extends ChartPanel {
         // Calculate volume range
         let maxVolume = 0;
         for (const d of visibleData) {
-            maxVolume = Math.max(maxVolume, d.volume);
+            maxVolume = Math.max(maxVolume, d.volume || 0);
+        }
+
+        // Avoid divide by zero
+        if (maxVolume === 0) {
+            maxVolume = 1;
         }
 
         // Add padding
@@ -54,10 +59,9 @@ class VolumePanel extends ChartPanel {
             );
         }
 
-        // Draw crosshair
-        if (this.viewState.hoverIndex >= 0) {
-            this.drawVolumeCrosshair(maxVolume);
-        }
+        // Draw crosshair (free-moving FPS style)
+        const valueToY = this.createValueToY(0, maxVolume);
+        this.drawCrosshair(valueToY, (idx) => this.data[idx]?.volume, 0, maxVolume);
 
         // Draw Y axis
         this.drawVolumeAxis(maxVolume);
@@ -83,54 +87,29 @@ class VolumePanel extends ChartPanel {
 
     drawVolumeAxis(maxVolume) {
         const ctx = this.ctx;
-        ctx.fillStyle = this.colors.text;
-        ctx.font = '11px -apple-system, sans-serif';
+        ctx.font = 'bold 12px -apple-system, sans-serif';
         ctx.textAlign = 'left';
 
+        const x = this.width - this.margin.right + 5;
+
         // Show max volume
-        ctx.fillText(this.formatVolume(maxVolume), this.width - this.margin.right + 5, this.margin.top + 10);
+        const maxText = this.formatVolume(maxVolume);
+        const maxWidth = ctx.measureText(maxText).width;
+        ctx.fillStyle = 'rgba(13, 17, 23, 0.8)';
+        ctx.fillRect(x - 2, this.margin.top + 2, maxWidth + 4, 16);
+        ctx.fillStyle = '#c9d1d9';
+        ctx.fillText(maxText, x, this.margin.top + 14);
 
         // Show half
         const halfY = this.margin.top + this.chartHeight / 2;
-        ctx.fillText(this.formatVolume(maxVolume / 2), this.width - this.margin.right + 5, halfY + 4);
+        const halfText = this.formatVolume(maxVolume / 2);
+        const halfWidth = ctx.measureText(halfText).width;
+        ctx.fillStyle = 'rgba(13, 17, 23, 0.8)';
+        ctx.fillRect(x - 2, halfY - 4, halfWidth + 4, 16);
+        ctx.fillStyle = '#c9d1d9';
+        ctx.fillText(halfText, x, halfY + 8);
     }
 
-    drawVolumeCrosshair(maxVolume) {
-        const index = this.viewState.hoverIndex;
-        if (index < 0 || index >= this.data.length) return;
-
-        const d = this.data[index];
-        const x = this.indexToX(index);
-        const ctx = this.ctx;
-
-        ctx.strokeStyle = this.colors.crosshair;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-
-        // Vertical line
-        ctx.beginPath();
-        ctx.moveTo(x, this.margin.top);
-        ctx.lineTo(x, this.height - this.margin.bottom);
-        ctx.stroke();
-
-        // Horizontal line at volume level
-        const barHeight = (d.volume / maxVolume) * this.chartHeight;
-        const y = this.margin.top + this.chartHeight - barHeight;
-
-        ctx.beginPath();
-        ctx.moveTo(this.margin.left, y);
-        ctx.lineTo(this.width - this.margin.right, y);
-        ctx.stroke();
-
-        ctx.setLineDash([]);
-
-        // Volume label
-        ctx.fillStyle = this.colors.background;
-        ctx.fillRect(this.width - this.margin.right, y - 10, this.margin.right, 20);
-        ctx.fillStyle = this.colors.text;
-        ctx.textAlign = 'left';
-        ctx.fillText(this.formatVolume(d.volume), this.width - this.margin.right + 5, y + 4);
-    }
 }
 
 // Export

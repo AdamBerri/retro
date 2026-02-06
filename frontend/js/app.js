@@ -21,6 +21,12 @@ class App {
         this.tickerDropdownOpen = false;
         this.tickerSearchResults = [];
         this.selectedTickerIndex = -1;
+        
+        // Natural language modal state
+        this.nlState = {
+            rawQuery: '',
+            template: null,
+        };
 
         // DOM Elements
         this.elements = {
@@ -41,6 +47,15 @@ class App {
             dateFrom: document.getElementById('date-from'),
             dateTo: document.getElementById('date-to'),
             runScan: document.getElementById('run-scan'),
+            // Natural language modal
+            nlModal: document.getElementById('nl-modal'),
+            nlOverlay: document.querySelector('#nl-modal .nl-overlay'),
+            nlQuery: document.getElementById('nl-query'),
+            nlTemplate: document.getElementById('nl-template'),
+            nlFields: document.getElementById('nl-fields'),
+            nlMessage: document.getElementById('nl-message'),
+            nlCancel: document.getElementById('nl-cancel'),
+            nlRun: document.getElementById('nl-run'),
             // Ticker dropdown
             tickerTrigger: document.getElementById('ticker-trigger'),
             tickerDropdown: document.getElementById('ticker-dropdown'),
@@ -68,6 +83,7 @@ class App {
 
         // Initialize
         this.setupEventListeners();
+        this.initNlModal();
         this.initIndicatorMenu();
         this.setDefaultDates();
         this.loadInitialData();
@@ -128,6 +144,19 @@ class App {
             select.appendChild(option);
         }
     }
+
+    async refreshScanTypes() {
+        try {
+            const scanTypesRes = await fetch('/api/scan-types');
+            if (!scanTypesRes.ok) {
+                throw new Error(`Scan types API returned ${scanTypesRes.status}: ${scanTypesRes.statusText}`);
+            }
+            this.scanTypes = await scanTypesRes.json();
+            this.populateScanTypes();
+        } catch (err) {
+            console.warn('Failed to refresh scan types:', err);
+        }
+    }
     
     setDefaultDates() {
         const today = new Date();
@@ -151,6 +180,7 @@ class App {
             if (e.key === 'Escape') {
                 this.closeCommandBar();
                 this.closeTickerDropdown();
+                this.closeNlModal();
                 return;
             }
 
@@ -265,6 +295,14 @@ class App {
                     break;
             }
         });
+    }
+
+    initNlModal() {
+        if (!this.elements.nlModal) return;
+
+        this.elements.nlCancel?.addEventListener('click', () => this.closeNlModal());
+        this.elements.nlOverlay?.addEventListener('click', () => this.closeNlModal());
+        this.elements.nlRun?.addEventListener('click', () => this.submitNlModal());
     }
 
     // ============================================
@@ -684,6 +722,20 @@ class App {
                     });
                 }
             }
+
+            // Natural language query option
+            if (q.length >= 3) {
+                const trimmed = query.trim();
+                results.push({
+                    type: 'nl',
+                    title: `Interpret: "${trimmed}"`,
+                    subtitle: 'Clarify and run as a Rust scan',
+                    action: () => {
+                        this.openNlModal(trimmed);
+                        this.closeCommandBar();
+                    }
+                });
+            }
         }
         
         this.renderCommandResults(results);
@@ -698,7 +750,7 @@ class App {
             div.className = 'command-result' + (index === 0 ? ' selected' : '');
             div.dataset.index = index;
             
-            const icon = result.type === 'ticker' ? '📈' : result.type === 'scan' ? '🔍' : '⚡';
+            const icon = result.type === 'ticker' ? '📈' : result.type === 'scan' ? '🔍' : result.type === 'nl' ? '💬' : '⚡';
             
             div.innerHTML = `
                 <div class="command-result-icon">${icon}</div>
@@ -747,6 +799,186 @@ class App {
         if (this.selectedCommandIndex >= 0 && this.commandResults[this.selectedCommandIndex]) {
             this.commandResults[this.selectedCommandIndex].action();
             this.closeCommandBar();
+        }
+    }
+
+    // ============================================
+    // NATURAL LANGUAGE MODAL
+    // ============================================
+
+    openNlModal(rawQuery) {
+        if (!this.elements.nlModal) return;
+        this.nlState = { rawQuery, questions: [] };
+
+        this.elements.nlQuery.textContent = rawQuery;
+        this.elements.nlFields.innerHTML = '';
+        this.elements.nlMessage.textContent = 'Asking for clarifications...';
+        this.elements.nlTemplate.textContent = 'Clarify Query';
+        this.elements.nlRun.disabled = true;
+
+        this.elements.nlModal.classList.remove('nl-hidden');
+        this.elements.nlModal.setAttribute('aria-hidden', 'false');
+
+        const firstInput = this.elements.nlFields.querySelector('input, select');
+        if (firstInput) {
+            setTimeout(() => firstInput.focus(), 0);
+        }
+
+        this.requestNlClarifications(rawQuery);
+    }
+
+    closeNlModal() {
+        if (!this.elements.nlModal) return;
+        this.elements.nlModal.classList.add('nl-hidden');
+        this.elements.nlModal.setAttribute('aria-hidden', 'true');
+    }
+
+    async requestNlClarifications(rawQuery) {
+        try {
+            this.elements.nlMessage.textContent = 'Contacting the LLM for clarification...';
+            const res = await fetch('/api/nl/clarify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: rawQuery }),
+            });
+
+            const payload = await res.json();
+            if (!res.ok) {
+                throw new Error(payload?.error || 'Failed to clarify query');
+            }
+
+            const questions = payload.questions || [];
+            this.nlState.questions = questions;
+            this.buildNlFieldsFromQuestions(questions);
+
+            this.elements.nlTemplate.textContent = payload.title || 'Clarify Query';
+            this.elements.nlMessage.textContent = payload.message || 'Confirm details, then run in Rust.';
+            this.elements.nlRun.disabled = false;
+        } catch (err) {
+            console.error('NL clarify failed:', err);
+            this.elements.nlTemplate.textContent = 'Unable to clarify';
+            this.elements.nlMessage.textContent = err.message || 'LLM clarification failed.';
+            this.elements.nlRun.disabled = true;
+        }
+    }
+
+    buildNlFieldsFromQuestions(questions) {
+        this.elements.nlFields.innerHTML = '';
+
+        if (!questions || questions.length === 0) {
+            const note = document.createElement('div');
+            note.className = 'nl-message';
+            note.textContent = 'No clarifications needed.';
+            this.elements.nlFields.appendChild(note);
+            return;
+        }
+
+        for (const field of questions) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'nl-field';
+
+            const label = document.createElement('label');
+            label.className = 'nl-label';
+            label.textContent = field.label || field.id;
+
+            let input;
+            if (field.type === 'select') {
+                input = document.createElement('select');
+                input.className = 'nl-select';
+                const options = field.options || [];
+                for (const option of options) {
+                    const opt = document.createElement('option');
+                    opt.value = option;
+                    opt.textContent = option;
+                    input.appendChild(opt);
+                }
+            } else {
+                input = document.createElement('input');
+                input.className = 'nl-input';
+                input.type = field.type === 'number' ? 'number' : 'text';
+                if (field.step) input.step = field.step;
+                if (field.min !== undefined) input.min = field.min;
+                if (field.max !== undefined) input.max = field.max;
+                if (field.placeholder) input.placeholder = field.placeholder;
+            }
+
+            input.name = field.id;
+            if (field.default !== undefined && field.default !== null) {
+                input.value = field.default;
+            }
+
+            wrapper.appendChild(label);
+            wrapper.appendChild(input);
+            this.elements.nlFields.appendChild(wrapper);
+        }
+    }
+
+    collectNlAnswers() {
+        const answers = {};
+        const inputs = this.elements.nlFields.querySelectorAll('input, select');
+        for (const input of inputs) {
+            if (input.tagName === 'SELECT') {
+                answers[input.name] = input.value;
+            } else if (input.type === 'number') {
+                const num = parseFloat(input.value);
+                answers[input.name] = Number.isFinite(num) ? num : 0;
+            } else {
+                answers[input.name] = input.value;
+            }
+        }
+        return answers;
+    }
+
+    async submitNlModal() {
+        if (!this.nlState.rawQuery) return;
+
+        const answers = this.collectNlAnswers();
+        this.elements.nlRun.disabled = true;
+        this.elements.nlMessage.textContent = 'Generating Rust scan...';
+
+        try {
+            const res = await fetch('/api/nl/compile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: this.nlState.rawQuery,
+                    answers,
+                }),
+            });
+
+            const payload = await res.json();
+            if (!res.ok) {
+                throw new Error(payload?.error || 'Failed to generate scan');
+            }
+
+            await this.refreshScanTypes();
+
+            if (payload.scan_id) {
+                this.elements.scanType.value = payload.scan_id;
+                this.updateScanParams();
+            }
+
+            this.closeNlModal();
+
+            if (payload.requires_restart) {
+                this.elements.scanStatus.textContent = payload.message || 'Generated scan saved. Restart required.';
+                return;
+            }
+
+            if (payload.scan_id) {
+                const query = {
+                    scan_type: payload.scan_id,
+                    params: answers,
+                    date_from: this.elements.dateFrom.value || null,
+                    date_to: this.elements.dateTo.value || null,
+                };
+                this.runScanWithQuery(query);
+            }
+        } catch (err) {
+            console.error('NL compile failed:', err);
+            this.elements.nlMessage.textContent = err.message || 'LLM generation failed.';
+        } finally {
+            this.elements.nlRun.disabled = false;
         }
     }
     
@@ -851,32 +1083,41 @@ class App {
             date_from: this.elements.dateFrom.value || null,
             date_to: this.elements.dateTo.value || null,
         };
-        
+
+        await this.runScanWithQuery(query);
+    }
+
+    async runScanWithQuery(query) {
+        if (!query || !query.scan_type) {
+            alert('Missing scan type');
+            return;
+        }
+
         // Run scan
         this.elements.runScan.disabled = true;
         this.elements.runScan.textContent = 'Scanning...';
         this.elements.scanStatus.textContent = 'Scanning...';
-        
+
         try {
             const start = performance.now();
-            
+
             const res = await fetch('/api/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(query)
             });
-            
+
             const result = await res.json();
             const elapsed = performance.now() - start;
-            
+
             this.elements.scanStatus.textContent = `${result.matches.length} matches in ${elapsed.toFixed(0)}ms (server: ${result.scan_time_ms}ms)`;
-            
+
             this.displayScanResults(result.matches);
         } catch (err) {
             console.error('Scan failed:', err);
             this.elements.scanStatus.textContent = 'Scan failed';
         }
-        
+
         this.elements.runScan.disabled = false;
         this.elements.runScan.textContent = 'Run Scan';
     }

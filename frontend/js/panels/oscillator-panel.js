@@ -68,10 +68,8 @@ class OscillatorPanel extends ChartPanel {
         // Draw RSI line
         this.drawLine(rsi, viewStart, viewEnd, valueToY, this.colors.rsiLine, 2);
 
-        // Draw crosshair
-        if (hoverIndex >= 0) {
-            this.drawCrosshair(valueToY, (idx) => rsi[idx]);
-        }
+        // Draw crosshair (free-moving FPS style)
+        this.drawCrosshair(valueToY, (idx) => rsi[idx], minValue, maxValue);
 
         // Draw Y axis
         this.drawRSIAxis(valueToY, overbought, oversold);
@@ -96,17 +94,25 @@ class OscillatorPanel extends ChartPanel {
 
     drawRSIAxis(valueToY, overbought, oversold) {
         const ctx = this.ctx;
-        ctx.fillStyle = this.colors.text;
-        ctx.font = '11px -apple-system, sans-serif';
+        ctx.font = 'bold 12px -apple-system, sans-serif';
         ctx.textAlign = 'left';
 
         const x = this.width - this.margin.right + 5;
+        const labels = [100, overbought, 50, oversold, 0];
 
-        ctx.fillText('100', x, valueToY(100) + 4);
-        ctx.fillText(overbought.toString(), x, valueToY(overbought) + 4);
-        ctx.fillText('50', x, valueToY(50) + 4);
-        ctx.fillText(oversold.toString(), x, valueToY(oversold) + 4);
-        ctx.fillText('0', x, valueToY(0) + 4);
+        for (const value of labels) {
+            const y = valueToY(value);
+            const text = value.toString();
+            const textWidth = ctx.measureText(text).width;
+
+            // Background for readability
+            ctx.fillStyle = 'rgba(13, 17, 23, 0.8)';
+            ctx.fillRect(x - 2, y - 4, textWidth + 4, 16);
+
+            // Text
+            ctx.fillStyle = '#c9d1d9';
+            ctx.fillText(text, x, y + 8);
+        }
     }
 
     // ============================================
@@ -170,10 +176,8 @@ class OscillatorPanel extends ChartPanel {
         // Draw signal line
         this.drawLine(signal, viewStart, viewEnd, valueToY, this.colors.macdSignal, 1.5);
 
-        // Draw crosshair
-        if (hoverIndex >= 0) {
-            this.drawCrosshair(valueToY, (idx) => macd[idx]);
-        }
+        // Draw crosshair (free-moving FPS style)
+        this.drawCrosshair(valueToY, (idx) => macd[idx], minValue, maxValue);
 
         // Draw Y axis
         this.drawYAxis(minValue, maxValue, 4, (v) => v.toFixed(2));
@@ -248,10 +252,8 @@ class OscillatorPanel extends ChartPanel {
         // Draw %D line
         this.drawLine(stochD, viewStart, viewEnd, valueToY, this.colors.macdSignal, 1.5);
 
-        // Draw crosshair
-        if (hoverIndex >= 0) {
-            this.drawCrosshair(valueToY, (idx) => stochK[idx]);
-        }
+        // Draw crosshair (free-moving FPS style)
+        this.drawCrosshair(valueToY, (idx) => stochK[idx], minValue, maxValue);
 
         // Draw Y axis
         this.drawRSIAxis(valueToY, overbought, oversold);

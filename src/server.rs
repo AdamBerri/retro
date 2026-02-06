@@ -1,6 +1,10 @@
 //! Web server - Axum with WebSocket support for streaming results
 
 use crate::data::{DataStore, TickerData};
+use crate::generated;
+use crate::generated_store;
+use crate::llm;
+use crate::scan_types::{ScanParam, ScanType};
 use crate::scanner::{run_scan, ScanQuery, ScanResult};
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
@@ -63,6 +67,8 @@ pub async fn run() {
         .route("/api/ticker/:ticker", get(get_ticker_data))
         .route("/api/scan", post(run_scan_handler))
         .route("/api/scan-types", get(get_scan_types))
+        .route("/api/nl/clarify", post(nl_clarify_handler))
+        .route("/api/nl/compile", post(nl_compile_handler))
         // Static files (frontend)
         .nest_service("/", ServeDir::new("frontend").append_index_html_on_directories(true))
         // State
@@ -111,6 +117,29 @@ struct OHLCVPoint {
     low: f64,
     close: f64,
     volume: f64,
+}
+
+#[derive(Deserialize)]
+struct NlClarifyRequest {
+    query: String,
+}
+
+#[derive(Deserialize)]
+struct NlCompileRequest {
+    query: String,
+    answers: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct NlCompileResponse {
+    scan_id: String,
+    requires_restart: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
 }
 
 async fn get_ticker_data(
@@ -175,24 +204,99 @@ async fn run_scan_handler(
     Json(result)
 }
 
-#[derive(Serialize)]
-struct ScanType {
-    id: String,
-    name: String,
-    description: String,
-    params: Vec<ScanParam>,
+async fn nl_clarify_handler(
+    Json(req): Json<NlClarifyRequest>,
+) -> Result<Json<llm::ClarifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let query = req.query;
+    let response = tokio::task::spawn_blocking(move || llm::clarify(&query))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Clarify task panicked".into(),
+                }),
+            )
+        })?;
+
+    match response {
+        Ok(payload) => Ok(Json(payload)),
+        Err(e) => Err((
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )),
+    }
 }
 
-#[derive(Serialize)]
-struct ScanParam {
-    name: String,
-    param_type: String,
-    default: serde_json::Value,
-    description: String,
+async fn nl_compile_handler(
+    Json(req): Json<NlCompileRequest>,
+) -> Result<Json<NlCompileResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let query = req.query;
+    let answers = req.answers;
+
+    let spec = tokio::task::spawn_blocking(move || llm::compile(&query, &answers))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Compile task panicked".into(),
+                }),
+            )
+        })?;
+
+    let spec = match spec {
+        Ok(spec) => spec,
+        Err(e) => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
+        }
+    };
+
+    let (json_path, rs_path) = generated_store::generated_paths();
+    let mut specs = generated_store::load_specs(&json_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load generated scans: {}", e),
+            }),
+        )
+    })?;
+
+    generated_store::upsert_spec(&mut specs, spec.clone());
+    generated_store::save_specs(&json_path, &specs).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to save generated scans: {}", e),
+            }),
+        )
+    })?;
+
+    generated_store::write_generated_rs(&rs_path, &specs).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to write generated Rust: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(NlCompileResponse {
+        scan_id: generated_store::normalize_scan_id(&spec.id),
+        requires_restart: true,
+        message: "Generated scan saved. Restart the server to load it.".into(),
+    }))
 }
 
 async fn get_scan_types() -> Json<Vec<ScanType>> {
-    Json(vec![
+    let mut scans = vec![
         ScanType {
             id: "golden_cross".into(),
             name: "Golden Cross".into(),
@@ -335,6 +439,31 @@ async fn get_scan_types() -> Json<Vec<ScanType>> {
             }],
         },
         ScanType {
+            id: "monthly_gap_drop".into(),
+            name: "Monthly Gap Drop".into(),
+            description: "Month opens below prior close by a % threshold".into(),
+            params: vec![
+                ScanParam {
+                    name: "gap_pct".into(),
+                    param_type: "number".into(),
+                    default: 5.0.into(),
+                    description: "Gap-down percent (e.g. 5 = -5%)".into(),
+                },
+                ScanParam {
+                    name: "candle".into(),
+                    param_type: "text".into(),
+                    default: "any".into(),
+                    description: "Monthly candle filter: any | bullish | bearish".into(),
+                },
+                ScanParam {
+                    name: "event_on".into(),
+                    param_type: "text".into(),
+                    default: "start".into(),
+                    description: "Match date: start | end (month)".into(),
+                },
+            ],
+        },
+        ScanType {
             id: "bullish_divergence".into(),
             name: "Bullish Divergence".into(),
             description: "Price lower low + OBV higher high".into(),
@@ -395,5 +524,8 @@ async fn get_scan_types() -> Json<Vec<ScanType>> {
                 },
             ],
         },
-    ])
+    ];
+
+    scans.extend(generated::list_scan_types());
+    Json(scans)
 }

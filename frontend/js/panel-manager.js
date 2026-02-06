@@ -14,7 +14,10 @@ class PanelManager {
             candleWidth: 8,
             minCandleWidth: 2,
             maxCandleWidth: 50,
-            hoverIndex: -1
+            hoverIndex: -1,
+            mouseX: 0,
+            mouseY: 0,
+            mouseOnCanvas: false
         };
 
         // Data
@@ -349,6 +352,12 @@ class PanelManager {
 
     layoutPanels() {
         const containerHeight = this.container.clientHeight;
+        if (containerHeight === 0) {
+            // Container not ready yet, defer
+            requestAnimationFrame(() => this.layoutPanels());
+            return;
+        }
+
         const collapsedHeight = 32; // Header height when collapsed
 
         // Calculate available height for non-collapsed panels
@@ -372,16 +381,15 @@ class PanelManager {
             }
         });
 
-        // Force reflow then resize canvases
-        this.container.offsetHeight;
-
-        this.panels.forEach(panel => {
-            if (!panel.collapsed) {
-                panel.resize();
-            }
+        // Use RAF to ensure layout is applied before resizing canvases
+        requestAnimationFrame(() => {
+            this.panels.forEach(panel => {
+                if (!panel.collapsed) {
+                    panel.resize();
+                }
+            });
+            this.markAllDirty();
         });
-
-        this.markAllDirty();
     }
 
     // ============================================
@@ -404,8 +412,8 @@ class PanelManager {
             this.viewState.viewStart = Math.max(0, this.viewState.viewEnd - visibleCandles);
         }
 
-        // Update all panels
-        this.markAllDirty();
+        // Ensure panels are properly sized before rendering
+        this.layoutPanels();
     }
 
     getIndicator(name, params = {}) {
@@ -513,9 +521,12 @@ class PanelManager {
         const mouseX = e.clientX - rect.left;
         const mouseRatio = (mouseX - this.margin.left) / (this.container.clientWidth - this.margin.left - this.margin.right);
 
-        if (e.ctrlKey || e.metaKey) {
-            // Zoom
-            const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
+        // Pinch-to-zoom on trackpad (browser sends ctrlKey=true for pinch gestures)
+        if (e.ctrlKey) {
+            const normalizedDelta = -Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 100) / 100;
+            const zoomIntensity = 0.5;
+            const zoomFactor = 1 + normalizedDelta * zoomIntensity;
+
             const newWidth = Math.min(
                 Math.max(this.viewState.candleWidth * zoomFactor, this.viewState.minCandleWidth),
                 this.viewState.maxCandleWidth
@@ -523,16 +534,25 @@ class PanelManager {
 
             if (newWidth !== this.viewState.candleWidth) {
                 const visibleBefore = this.getVisibleCount();
+                const centerIndex = this.viewState.viewStart + Math.floor(visibleBefore * mouseRatio);
+
                 this.viewState.candleWidth = newWidth;
                 const visibleAfter = this.getVisibleCount();
 
-                const centerIndex = this.viewState.viewStart + Math.floor(visibleBefore * mouseRatio);
                 this.viewState.viewStart = Math.max(0, centerIndex - Math.floor(visibleAfter * mouseRatio));
                 this.viewState.viewEnd = Math.min(this.data.length - 1, this.viewState.viewStart + visibleAfter);
             }
-        } else {
-            // Pan
-            const panAmount = Math.sign(e.deltaY) * Math.max(1, Math.floor(this.getVisibleCount() * 0.1));
+        }
+
+        // Horizontal scroll (two-finger swipe left/right on trackpad)
+        if (Math.abs(e.deltaX) > 0) {
+            const panAmount = -Math.sign(e.deltaX) * Math.max(1, Math.floor(this.getVisibleCount() * 0.05));
+            this.pan(panAmount);
+        }
+
+        // Vertical scroll without ctrl also pans (for mouse wheel users)
+        if (!e.ctrlKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            const panAmount = -Math.sign(e.deltaY) * Math.max(1, Math.floor(this.getVisibleCount() * 0.1));
             this.pan(panAmount);
         }
 
@@ -542,6 +562,12 @@ class PanelManager {
     handleMouseMove(e) {
         const rect = this.container.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Store actual mouse position for free crosshair
+        this.viewState.mouseX = mouseX;
+        this.viewState.mouseY = mouseY;
+        this.viewState.mouseOnCanvas = true;
 
         if (this.isDragging) {
             const dx = mouseX - this.lastMouseX;
@@ -551,7 +577,7 @@ class PanelManager {
                 this.lastMouseX = mouseX;
             }
         } else {
-            // Hover - calculate index
+            // Hover - calculate index for data display
             const relativeX = mouseX - this.margin.left;
             const candleIndex = Math.floor(relativeX / this.viewState.candleWidth);
             const dataIndex = this.viewState.viewStart + candleIndex;
@@ -595,6 +621,7 @@ class PanelManager {
     handleMouseLeave() {
         this.isDragging = false;
         this.viewState.hoverIndex = -1;
+        this.viewState.mouseOnCanvas = false;
         this.container.style.cursor = 'crosshair';
         this.markAllDirty();
     }

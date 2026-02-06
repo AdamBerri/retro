@@ -1,6 +1,7 @@
 //! Scanner - parallel execution engine for stock queries
 
 use crate::data::TickerData;
+use crate::generated;
 use crate::indicators::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -100,8 +101,15 @@ fn scan_single_ticker(
         "bearish_divergence" => scan_bearish_divergence(data, &query.params),
         "consolidation_breakout" => scan_consolidation_breakout(data, &query.params),
         "bullish_engulfing_oversold" => scan_bullish_engulfing_oversold(data, &query.params),
+        "monthly_gap_drop" => scan_monthly_gap_drop(data, &query.params),
         "custom" => scan_custom(data, &query.params),
-        _ => return None,
+        _ => {
+            if let Some(scan_fn) = generated::get_scan(&query.scan_type) {
+                scan_fn(data, &query.params)
+            } else {
+                return None;
+            }
+        }
     };
     
     // Filter by date range if specified
@@ -346,6 +354,142 @@ fn scan_bullish_engulfing_oversold(data: &TickerData, params: &HashMap<String, s
             if rsi_was_oversold {
                 result[i] = true;
             }
+        }
+    }
+
+    result
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MonthlyBar {
+    start_idx: usize,
+    end_idx: usize,
+    open: f64,
+    close: f64,
+    high: f64,
+    low: f64,
+    volume: f64,
+}
+
+#[inline]
+fn month_key(date: &str) -> &str {
+    date.get(0..7).unwrap_or(date)
+}
+
+fn build_monthly_bars(data: &TickerData) -> Vec<MonthlyBar> {
+    let n = data.close.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut bars = Vec::new();
+
+    let mut current_month = month_key(&data.date[0]).to_string();
+    let mut start_idx = 0usize;
+    let mut open = data.open[0];
+    let mut high = data.high[0];
+    let mut low = data.low[0];
+    let mut volume = data.volume[0];
+
+    for i in 1..n {
+        let month = month_key(&data.date[i]);
+        if month != current_month {
+            let end_idx = i - 1;
+            let close = data.close[end_idx];
+            bars.push(MonthlyBar {
+                start_idx,
+                end_idx,
+                open,
+                close,
+                high,
+                low,
+                volume,
+            });
+
+            current_month = month.to_string();
+            start_idx = i;
+            open = data.open[i];
+            high = data.high[i];
+            low = data.low[i];
+            volume = data.volume[i];
+        } else {
+            high = high.max(data.high[i]);
+            low = low.min(data.low[i]);
+            volume += data.volume[i];
+        }
+    }
+
+    let end_idx = n - 1;
+    let close = data.close[end_idx];
+    bars.push(MonthlyBar {
+        start_idx,
+        end_idx,
+        open,
+        close,
+        high,
+        low,
+        volume,
+    });
+
+    bars
+}
+
+/// Monthly gap-down (open below prior month's close by %), optionally filter by candle direction.
+fn scan_monthly_gap_drop(data: &TickerData, params: &HashMap<String, serde_json::Value>) -> Vec<bool> {
+    let gap_pct = params
+        .get("gap_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(5.0)
+        .abs();
+    let candle = params
+        .get("candle")
+        .and_then(|v| v.as_str())
+        .unwrap_or("any")
+        .to_lowercase();
+    let event_on = params
+        .get("event_on")
+        .and_then(|v| v.as_str())
+        .unwrap_or("start")
+        .to_lowercase();
+
+    let n = data.close.len();
+    let mut result = vec![false; n];
+
+    let bars = build_monthly_bars(data);
+    if bars.len() < 2 {
+        return result;
+    }
+
+    for i in 1..bars.len() {
+        let prev = bars[i - 1];
+        let curr = bars[i];
+
+        if prev.close == 0.0 {
+            continue;
+        }
+
+        let gap = (curr.open - prev.close) / prev.close * 100.0;
+        if gap > -gap_pct {
+            continue;
+        }
+
+        let candle_ok = match candle.as_str() {
+            "bullish" => curr.close > curr.open,
+            "bearish" => curr.close < curr.open,
+            _ => true,
+        };
+
+        if !candle_ok {
+            continue;
+        }
+
+        let idx = if event_on == "end" || event_on == "close" {
+            curr.end_idx
+        } else {
+            curr.start_idx
+        };
+        if idx < result.len() {
+            result[idx] = true;
         }
     }
 

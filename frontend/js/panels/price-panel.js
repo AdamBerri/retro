@@ -77,11 +77,8 @@ class PricePanel extends ChartPanel {
         // Draw candles
         this.drawCandles(visibleData, viewStart, priceToY);
 
-        // Draw crosshair
-        if (this.viewState.hoverIndex >= 0) {
-            this.drawCrosshair(priceToY, (idx) => data[idx]?.close);
-            this.drawDateLabel(this.viewState.hoverIndex);
-        }
+        // Draw crosshair (free-moving FPS style)
+        this.drawCrosshair(priceToY, (idx) => data[idx]?.close, minPrice, maxPrice);
 
         // Draw Y axis
         this.drawYAxis(minPrice, maxPrice);

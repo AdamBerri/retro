@@ -78,6 +78,32 @@ Open http://localhost:3000
 | Bullish Divergence | Price lower low + OBV higher high |
 | Consolidation Breakout | Breakout from tight range with volume |
 
+### Natural Language (LLM → Rust)
+
+NL queries are clarified and compiled into Rust scans using Anthropic Claude.
+
+Create a `.env` file with:
+
+```
+ANTHROPIC_API_KEY=your_key_here
+ANTHROPIC_MODEL=claude-opus-4-6
+ANTHROPIC_INFERENCE_GEO=us
+```
+
+Optional overrides:
+
+```
+ANTHROPIC_VERSION=2023-06-01
+ANTHROPIC_API_URL=https://api.anthropic.com/v1/messages
+```
+
+The backend uses:
+
+- `/api/nl/clarify` (clarifying questions)
+- `/api/nl/compile` (generate Rust scan code)
+
+Schemas and prompt rules live in `src/llm.rs`.
+
 ## Architecture
 
 ```

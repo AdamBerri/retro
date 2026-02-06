@@ -42,7 +42,7 @@ class CandlestickChart {
         this.lastMouseX = 0;
         this.hoverIndex = -1;
 
-        // Smooth crosshair state (video game feel)
+        // Smooth crosshair state (FPS game feel - instant response)
         this.mouseX = 0;
         this.mouseY = 0;
         this.targetX = 0;
@@ -50,12 +50,16 @@ class CandlestickChart {
         this.displayX = 0;
         this.displayY = 0;
         this.mouseOnCanvas = false;
-        this.crosshairLerp = 0.35; // Interpolation speed (0-1, higher = snappier)
+        this.crosshairLerp = 1.0; // Instant response like FPS - no smoothing delay
 
         // Performance
         this.rafId = null;
         this.needsRender = true;
         this.alwaysRender = false; // Set true for smooth crosshair animation
+
+        // Smooth zoom state
+        this.targetCandleWidth = this.candleWidth;
+        this.zoomLerp = 0.25; // Smoothing factor for zoom
         
         // Bind methods
         this.render = this.render.bind(this);
@@ -111,8 +115,11 @@ class CandlestickChart {
     
     startRenderLoop() {
         const loop = () => {
-            // Always render when mouse is on canvas for buttery smooth crosshair
-            if (this.needsRender || this.mouseOnCanvas) {
+            // Update smooth zoom
+            this.updateZoom();
+
+            // Render when needed, mouse on canvas, or zoom animating
+            if (this.needsRender || this.mouseOnCanvas || this.isZooming()) {
                 this.updateCrosshairPosition();
                 this.render();
                 this.needsRender = false;
@@ -120,6 +127,30 @@ class CandlestickChart {
             this.rafId = requestAnimationFrame(loop);
         };
         loop();
+    }
+
+    updateZoom() {
+        const diff = this.targetCandleWidth - this.candleWidth;
+        if (Math.abs(diff) < 0.01) {
+            if (this.candleWidth !== this.targetCandleWidth) {
+                this.candleWidth = this.targetCandleWidth;
+                this.needsRender = true;
+            }
+            return;
+        }
+
+        // Lerp toward target
+        this.candleWidth += diff * this.zoomLerp;
+
+        // Recalculate view bounds to maintain center
+        const visibleCount = this.getVisibleCount();
+        this.viewEnd = Math.min(this.data.length - 1, this.viewStart + visibleCount - 1);
+
+        this.needsRender = true;
+    }
+
+    isZooming() {
+        return Math.abs(this.targetCandleWidth - this.candleWidth) > 0.01;
     }
 
     updateCrosshairPosition() {
@@ -144,13 +175,13 @@ class CandlestickChart {
     
     setData(data) {
         this.data = data;
-        
+
         // Calculate indicators
         const closes = data.map(d => d.close);
         const highs = data.map(d => d.high);
         const lows = data.map(d => d.low);
         const volumes = data.map(d => d.volume);
-        
+
         this.indicators = {
             sma20: Indicators.sma(closes, 20),
             sma50: Indicators.sma(closes, 50),
@@ -158,12 +189,15 @@ class CandlestickChart {
             rsi: Indicators.rsi(closes, 14),
             obv: Indicators.obv(closes, volumes)
         };
-        
+
+        // Sync target with current for clean state
+        this.targetCandleWidth = this.candleWidth;
+
         // Set initial view to show last 100 candles
         const visibleCandles = Math.floor((this.width - this.margin.left - this.margin.right) / this.candleWidth);
         this.viewEnd = data.length - 1;
         this.viewStart = Math.max(0, this.viewEnd - visibleCandles);
-        
+
         this.needsRender = true;
     }
     
@@ -227,6 +261,9 @@ class CandlestickChart {
         
         // Draw grid
         this.drawGrid(ctx, minPrice, maxPrice, chartHeight, chartWidth);
+
+        // Draw date labels on X-axis
+        this.drawDateAxis(ctx, visibleData, indexToX);
         
         // Draw volume bars
         ctx.save();
@@ -289,8 +326,8 @@ class CandlestickChart {
             }
         }
         
-        // Draw crosshair (always when mouse is on canvas)
-        if (this.mouseOnCanvas && this.hoverIndex >= 0 && this.hoverIndex < data.length) {
+        // Draw crosshair (always when mouse is on canvas - follows mouse freely)
+        if (this.mouseOnCanvas) {
             this.drawCrosshair(ctx, this.hoverIndex, priceToY, indexToX, chartHeight, chartWidth, minPrice, maxPrice);
         }
         
@@ -341,115 +378,154 @@ class CandlestickChart {
     }
     
     drawPriceAxis(ctx, minPrice, maxPrice, chartHeight) {
-        ctx.fillStyle = this.colors.text;
-        ctx.font = '11px -apple-system, sans-serif';
-        ctx.textAlign = 'left';
-        
         const priceStep = this.niceNumber((maxPrice - minPrice) / 6);
         const startPrice = Math.ceil(minPrice / priceStep) * priceStep;
-        
+
         for (let price = startPrice; price <= maxPrice; price += priceStep) {
             const y = this.margin.top + chartHeight - ((price - minPrice) / (maxPrice - minPrice)) * chartHeight;
-            ctx.fillText(this.formatPrice(price), this.width - this.margin.right + 5, y + 4);
+
+            // Bold axis labels with subtle background
+            const labelText = this.formatPrice(price);
+            ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
+            const textWidth = ctx.measureText(labelText).width;
+
+            // Subtle background pill
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+            this.roundRect(ctx, this.width - this.margin.right + 3, y - 10, textWidth + 10, 20, 3);
+            ctx.fill();
+
+            // Bold white text
+            ctx.fillStyle = '#e6e6e6';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(labelText, this.width - this.margin.right + 8, y);
         }
     }
-    
+
+    drawDateAxis(ctx, visibleData, indexToX) {
+        if (!visibleData.length) return;
+
+        // Show ~5-7 date labels evenly spaced
+        const numLabels = Math.min(7, Math.max(3, Math.floor(visibleData.length / 15)));
+        const step = Math.floor(visibleData.length / numLabels);
+
+        ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+
+        for (let i = 0; i < visibleData.length; i += step) {
+            const d = visibleData[i];
+            const x = indexToX(this.viewStart + i);
+            const y = this.height - this.margin.bottom + 8;
+
+            // Format date nicely (show month/day or year depending on zoom)
+            const dateStr = d.date; // YYYY-MM-DD format
+            const parts = dateStr.split('-');
+            const shortDate = parts.length >= 3 ? `${parts[1]}/${parts[2]}` : dateStr;
+
+            // Subtle background
+            const textWidth = ctx.measureText(shortDate).width;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+            this.roundRect(ctx, x - textWidth / 2 - 5, y - 2, textWidth + 10, 18, 3);
+            ctx.fill();
+
+            // Bold text
+            ctx.fillStyle = '#c0c0c0';
+            ctx.fillText(shortDate, x, y);
+        }
+    }
+
     drawCrosshair(ctx, index, priceToY, indexToX, chartHeight, chartWidth, minPrice, maxPrice) {
-        const d = this.data[index];
-        const candleX = indexToX(index);
+        // FPS-style: crosshair follows mouse EXACTLY, no clamping
+        const cursorX = this.displayX;
+        const cursorY = this.displayY;
 
-        // Use smooth interpolated position for crosshair (video game feel)
-        const x = this.displayX;
-        const y = this.displayY;
+        // Calculate price at cursor position (can be outside range)
+        const priceAtCursor = maxPrice - ((cursorY - this.margin.top) / chartHeight) * (maxPrice - minPrice);
 
-        // Clamp to chart area
-        const clampedX = Math.max(this.margin.left, Math.min(this.width - this.margin.right, x));
-        const clampedY = Math.max(this.margin.top, Math.min(this.margin.top + chartHeight, y));
-
-        // Calculate price at cursor position
-        const priceAtCursor = maxPrice - ((clampedY - this.margin.top) / chartHeight) * (maxPrice - minPrice);
+        // Get candle data if hovering over one
+        const hasCandle = index >= 0 && index < this.data.length;
+        const d = hasCandle ? this.data[index] : null;
 
         ctx.save();
 
-        // === HIGHLIGHT NEAREST CANDLE (draw first, behind everything) ===
-        if (index >= this.viewStart && index <= this.viewEnd) {
-            const highlightX = candleX - this.candleWidth / 2 - 2;
-            const highlightW = this.candleWidth + 4;
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-            ctx.fillRect(highlightX, this.margin.top, highlightW, chartHeight);
-        }
-
-        // === CROSSHAIR LINES with glow ===
-        ctx.shadowColor = 'rgba(100, 180, 255, 0.4)';
-        ctx.shadowBlur = 6;
-        ctx.strokeStyle = 'rgba(150, 180, 220, 0.5)';
+        // === CROSSHAIR LINES - full screen, FPS style ===
+        ctx.shadowColor = 'rgba(100, 180, 255, 0.5)';
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = 'rgba(150, 180, 220, 0.6)';
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
 
-        // Vertical line
+        // Vertical line - spans full canvas height at mouse X
         ctx.beginPath();
-        ctx.moveTo(clampedX, this.margin.top);
-        ctx.lineTo(clampedX, this.height - this.margin.bottom);
+        ctx.moveTo(cursorX, 0);
+        ctx.lineTo(cursorX, this.height);
         ctx.stroke();
 
-        // Horizontal line
+        // Horizontal line - spans full canvas width at mouse Y
         ctx.beginPath();
-        ctx.moveTo(this.margin.left, clampedY);
-        ctx.lineTo(this.width - this.margin.right, clampedY);
+        ctx.moveTo(0, cursorY);
+        ctx.lineTo(this.width, cursorY);
         ctx.stroke();
 
         ctx.shadowBlur = 0;
 
         // === CENTER CROSSHAIR DOT ===
         ctx.beginPath();
-        ctx.arc(clampedX, clampedY, 5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(100, 180, 255, 0.8)';
+        ctx.arc(cursorX, cursorY, 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(clampedX, clampedY, 2.5, 0, Math.PI * 2);
+        ctx.arc(cursorX, cursorY, 3, 0, Math.PI * 2);
         ctx.fillStyle = '#fff';
         ctx.fill();
 
-        // === BIG PRICE LABEL ON Y-AXIS ===
-        const priceLabelH = 28;
+        // === BOLD PRICE LABEL ON Y-AXIS ===
+        const priceLabelH = 32;
         const priceLabelW = this.margin.right - 4;
         const priceLabelX = this.width - this.margin.right + 2;
-        const priceLabelY = clampedY - priceLabelH / 2;
+        const priceLabelY = Math.max(0, Math.min(this.height - priceLabelH, cursorY - priceLabelH / 2));
 
-        // Background with accent color
-        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
-        this.roundRect(ctx, priceLabelX, priceLabelY, priceLabelW, priceLabelH, 4);
+        // Bright, bold background
+        ctx.fillStyle = '#4da6ff';
+        ctx.shadowColor = 'rgba(77, 166, 255, 0.6)';
+        ctx.shadowBlur = 10;
+        this.roundRect(ctx, priceLabelX, priceLabelY, priceLabelW, priceLabelH, 5);
         ctx.fill();
+        ctx.shadowBlur = 0;
 
-        // Price text - BIG and bold
+        // Bold price text
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.formatPrice(priceAtCursor), priceLabelX + priceLabelW / 2, priceLabelY + priceLabelH / 2);
+
+        // === BOLD DATE LABEL ON X-AXIS ===
+        const dateLabelH = 30;
+        const dateLabelW = 110;
+        const dateLabelX = Math.max(0, Math.min(this.width - dateLabelW, cursorX - dateLabelW / 2));
+        const dateLabelY = this.height - this.margin.bottom + 6;
+
+        // Bright, bold background
+        ctx.fillStyle = '#4da6ff';
+        ctx.shadowColor = 'rgba(77, 166, 255, 0.6)';
+        ctx.shadowBlur = 10;
+        this.roundRect(ctx, dateLabelX, dateLabelY, dateLabelW, dateLabelH, 5);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Bold date text
         ctx.fillStyle = '#000';
         ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(this.formatPrice(priceAtCursor), priceLabelX + priceLabelW / 2, clampedY);
-
-        // === BIG DATE LABEL ON X-AXIS ===
-        const dateLabelH = 26;
-        const dateLabelW = 100;
-        const dateLabelX = clampedX - dateLabelW / 2;
-        const dateLabelY = this.height - this.margin.bottom + 4;
-
-        // Background with accent color
-        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
-        this.roundRect(ctx, dateLabelX, dateLabelY, dateLabelW, dateLabelH, 4);
-        ctx.fill();
-
-        // Date text - BIG and bold
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(d.date, clampedX, dateLabelY + dateLabelH / 2);
+        ctx.fillText(hasCandle ? d.date : '—', dateLabelX + dateLabelW / 2, dateLabelY + dateLabelH / 2);
 
         ctx.restore();
 
         // Update info callback
-        if (this.onHover) {
+        if (hasCandle && this.onHover) {
             this.onHover(index, d, this.indicators);
         }
     }
@@ -475,31 +551,45 @@ class CandlestickChart {
     
     handleWheel(e) {
         e.preventDefault();
-        
+
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseRatio = (mouseX - this.margin.left) / (this.width - this.margin.left - this.margin.right);
-        
-        if (e.ctrlKey || e.metaKey) {
-            // Zoom
-            const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
-            const newWidth = Math.min(Math.max(this.candleWidth * zoomFactor, this.minCandleWidth), this.maxCandleWidth);
-            
-            if (newWidth !== this.candleWidth) {
+
+        // Pinch-to-zoom on trackpad (browser sends ctrlKey=true for pinch gestures)
+        if (e.ctrlKey) {
+            // Normalize deltaY for consistent zoom across devices
+            const normalizedDelta = -Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 100) / 100;
+            const zoomIntensity = 0.5;
+            const zoomFactor = 1 + normalizedDelta * zoomIntensity;
+
+            const newWidth = Math.min(Math.max(this.targetCandleWidth * zoomFactor, this.minCandleWidth), this.maxCandleWidth);
+
+            if (newWidth !== this.targetCandleWidth) {
                 const visibleBefore = Math.floor((this.width - this.margin.left - this.margin.right) / this.candleWidth);
-                this.candleWidth = newWidth;
-                const visibleAfter = Math.floor((this.width - this.margin.left - this.margin.right) / this.candleWidth);
-                
                 const centerIndex = this.viewStart + Math.floor(visibleBefore * mouseRatio);
+
+                this.targetCandleWidth = newWidth;
+
+                // Adjust view to keep zoom centered on mouse position
+                const visibleAfter = Math.floor((this.width - this.margin.left - this.margin.right) / newWidth);
                 this.viewStart = Math.max(0, centerIndex - Math.floor(visibleAfter * mouseRatio));
                 this.viewEnd = Math.min(this.data.length - 1, this.viewStart + visibleAfter);
             }
-        } else {
-            // Pan
-            const panAmount = Math.sign(e.deltaY) * Math.max(1, Math.floor(this.getVisibleCount() * 0.1));
+        }
+
+        // Horizontal scroll (two-finger swipe left/right on trackpad)
+        if (Math.abs(e.deltaX) > 0) {
+            const panAmount = -Math.sign(e.deltaX) * Math.max(1, Math.floor(this.getVisibleCount() * 0.05));
             this.pan(panAmount);
         }
-        
+
+        // Vertical scroll without ctrl also pans (for mouse wheel users)
+        if (!e.ctrlKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            const panAmount = -Math.sign(e.deltaY) * Math.max(1, Math.floor(this.getVisibleCount() * 0.1));
+            this.pan(panAmount);
+        }
+
         this.needsRender = true;
     }
     

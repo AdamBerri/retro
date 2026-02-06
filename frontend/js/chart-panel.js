@@ -20,19 +20,35 @@ class ChartPanel {
 
     resize() {
         const dpr = window.devicePixelRatio || 1;
-        const rect = this.canvas.getBoundingClientRect();
+
+        // Get dimensions from the wrapper element, not the canvas
+        // Canvas elements have intrinsic sizing that interferes with flexbox
+        const wrapper = this.canvas.parentElement;
+        if (!wrapper) return;
+
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const header = wrapper.querySelector('.panel-header-bar');
+        const headerHeight = header ? header.offsetHeight : 0;
+
+        const width = wrapperRect.width;
+        const height = wrapperRect.height - headerHeight;
 
         // Skip if no dimensions yet
-        if (rect.width === 0 || rect.height === 0) {
+        if (width <= 0 || height <= 0) {
             return;
         }
 
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
+        // Set canvas size explicitly
+        this.canvas.style.width = width + 'px';
+        this.canvas.style.height = height + 'px';
+        this.canvas.width = width * dpr;
+        this.canvas.height = height * dpr;
 
-        this.width = rect.width;
-        this.height = rect.height;
+        // Reset transform and apply DPR scaling
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        this.width = width;
+        this.height = height;
         this.needsRender = true;
     }
 
@@ -105,8 +121,6 @@ class ChartPanel {
 
     drawYAxis(minValue, maxValue, numLines = 4, formatter = null) {
         const ctx = this.ctx;
-        ctx.fillStyle = this.colors.text;
-        ctx.font = '11px -apple-system, sans-serif';
         ctx.textAlign = 'left';
 
         const fmt = formatter || ((v) => this.formatPrice(v));
@@ -115,7 +129,20 @@ class ChartPanel {
 
         for (let value = startValue; value <= maxValue; value += step) {
             const y = this.margin.top + this.chartHeight - ((value - minValue) / (maxValue - minValue)) * this.chartHeight;
-            ctx.fillText(fmt(value), this.width - this.margin.right + 5, y + 4);
+            const text = fmt(value);
+            const x = this.width - this.margin.right + 5;
+
+            // Bold font with subtle background
+            ctx.font = 'bold 12px -apple-system, sans-serif';
+            const textWidth = ctx.measureText(text).width;
+
+            // Background for readability
+            ctx.fillStyle = 'rgba(13, 17, 23, 0.8)';
+            ctx.fillRect(x - 2, y - 8, textWidth + 4, 16);
+
+            // Text
+            ctx.fillStyle = '#c9d1d9';
+            ctx.fillText(text, x, y + 4);
         }
     }
 
@@ -199,43 +226,98 @@ class ChartPanel {
         }
     }
 
-    drawCrosshair(valueToY, getValue = null) {
-        const index = this.viewState.hoverIndex;
-        if (index < 0 || index >= this.data.length) return;
+    drawCrosshair(valueToY, getValue = null, minValue = 0, maxValue = 100) {
+        // Only draw if mouse is on canvas
+        if (!this.viewState.mouseOnCanvas) return;
 
-        const x = this.indexToX(index);
         const ctx = this.ctx;
+        const mouseX = this.viewState.mouseX;
+        const mouseY = this.viewState.mouseY;
 
-        ctx.strokeStyle = this.colors.crosshair;
+        // Calculate this panel's Y offset within the container
+        const wrapper = this.canvas.parentElement;
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const containerRect = this.manager.container.getBoundingClientRect();
+        const header = wrapper.querySelector('.panel-header-bar');
+        const headerHeight = header ? header.offsetHeight : 0;
+        const panelOffsetY = wrapperRect.top - containerRect.top + headerHeight;
+
+        // Convert container mouseY to panel-local Y
+        const localMouseY = mouseY - panelOffsetY;
+
+        // Check if mouse is within this panel's bounds
+        const inPanel = localMouseY >= 0 && localMouseY <= this.height;
+
+        // Draw crosshair lines - full span, FPS style
+        ctx.strokeStyle = 'rgba(88, 166, 255, 0.6)';
         ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
+        ctx.setLineDash([]);
 
-        // Vertical line
+        // Vertical line at exact mouse X position (full height)
         ctx.beginPath();
-        ctx.moveTo(x, this.margin.top);
-        ctx.lineTo(x, this.height - this.margin.bottom);
+        ctx.moveTo(mouseX, 0);
+        ctx.lineTo(mouseX, this.height);
         ctx.stroke();
 
-        // Horizontal line if we have a value
-        if (getValue) {
-            const value = getValue(index);
-            if (!isNaN(value)) {
-                const y = valueToY(value);
+        // Horizontal line at exact mouse Y position (full width) - only if mouse is in this panel
+        if (inPanel) {
+            ctx.beginPath();
+            ctx.moveTo(0, localMouseY);
+            ctx.lineTo(this.width, localMouseY);
+            ctx.stroke();
 
-                ctx.beginPath();
-                ctx.moveTo(this.margin.left, y);
-                ctx.lineTo(this.width - this.margin.right, y);
-                ctx.stroke();
+            // Center dot at intersection
+            ctx.fillStyle = 'rgba(88, 166, 255, 0.9)';
+            ctx.beginPath();
+            ctx.arc(mouseX, localMouseY, 4, 0, Math.PI * 2);
+            ctx.fill();
 
-                // Value label
-                ctx.setLineDash([]);
-                ctx.fillStyle = this.colors.background;
-                ctx.fillRect(this.width - this.margin.right, y - 10, this.margin.right, 20);
-                ctx.fillStyle = this.colors.text;
+            // Calculate value at mouse Y position
+            if (valueToY && minValue !== maxValue) {
+                const valueAtMouse = maxValue - ((localMouseY - this.margin.top) / this.chartHeight) * (maxValue - minValue);
+
+                // Draw value label with glow effect
+                const valueText = this.formatValue(valueAtMouse);
+                ctx.font = 'bold 12px -apple-system, sans-serif';
+                const textWidth = ctx.measureText(valueText).width;
+                const labelX = this.width - this.margin.right + 2;
+                const labelY = localMouseY;
+
+                // Glow background
+                ctx.fillStyle = 'rgba(56, 139, 253, 0.9)';
+                ctx.shadowColor = 'rgba(56, 139, 253, 0.5)';
+                ctx.shadowBlur = 8;
+                ctx.fillRect(labelX, labelY - 10, textWidth + 10, 20);
+                ctx.shadowBlur = 0;
+
+                // Text
+                ctx.fillStyle = '#ffffff';
                 ctx.textAlign = 'left';
-                ctx.font = '11px -apple-system, sans-serif';
-                ctx.fillText(this.formatValue(value), this.width - this.margin.right + 5, y + 4);
+                ctx.fillText(valueText, labelX + 5, labelY + 4);
             }
+        }
+
+        // Draw date label at bottom (based on nearest candle to mouseX)
+        const index = this.viewState.hoverIndex;
+        if (index >= 0 && index < this.data.length) {
+            const d = this.data[index];
+            ctx.font = 'bold 12px -apple-system, sans-serif';
+            const dateText = d.date;
+            const dateWidth = ctx.measureText(dateText).width;
+            const dateLabelX = mouseX - dateWidth / 2 - 5;
+            const dateLabelY = this.height - this.margin.bottom + 2;
+
+            // Glow background
+            ctx.fillStyle = 'rgba(56, 139, 253, 0.9)';
+            ctx.shadowColor = 'rgba(56, 139, 253, 0.5)';
+            ctx.shadowBlur = 8;
+            ctx.fillRect(dateLabelX, dateLabelY, dateWidth + 10, 20);
+            ctx.shadowBlur = 0;
+
+            // Text
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.fillText(dateText, mouseX, dateLabelY + 14);
         }
 
         ctx.setLineDash([]);
